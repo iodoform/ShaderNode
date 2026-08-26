@@ -394,11 +394,6 @@
       box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.4), 0 8px 24px rgba(0,0,0,0.6);
     }
 
-    .node.viewer-active {
-      border-color: var(--accent-orange);
-      box-shadow: 0 0 0 2px rgba(255, 152, 0, 0.5), 0 8px 24px rgba(0,0,0,0.6);
-    }
-
     .node-header {
       padding: 8px 10px;
       border-top-left-radius: 5px;
@@ -413,14 +408,14 @@
       gap: 8px;
     }
 
-    .node-viewer-toggle {
-      cursor: pointer;
-      opacity: 0.6;
-      font-size: 12px;
-      line-height: 1;
+    .node-viewer-canvas {
+      width: 100%;
+      height: 100px;
+      display: block;
+      border-radius: 4px;
+      background-color: #000;
+      border: 1px solid #333;
     }
-    .node-viewer-toggle:hover { opacity: 1; }
-    .node.viewer-active .node-viewer-toggle { opacity: 1; }
 
     .node-title {
       flex: 1;

@@ -236,7 +236,6 @@
         title: 'Viewer',
         category: 'viewer',
         color: '#ff9800',
-        isViewerNode: true,
         // 入出力の型は接続元に応じて動的に解決される（getEffectiveInputs/Outputs参照）
         inputs: [{ id: 'in', label: 'Value', type: 'vec3', default: 'vec3(0.0)' }],
         outputs: [{ id: 'out', label: 'Value', type: 'vec3' }]
@@ -356,9 +355,6 @@
 
         this.connectingSocket = null;
         this.tempWirePos = { x: 0, y: 0 };
-
-        // ── ビューワーノード（プレビュー確認用）──
-        this.activeViewerNodeId = null;
 
         // ── タッチ操作用の状態 ──
         this.touchSelectMode = false;
@@ -655,11 +651,6 @@
         }
 
         this.nodes.push(node);
-
-        if (type === 'viewer') {
-          this.activeViewerNodeId = node.id;
-        }
-
         this.renderNode(node);
         this.selectNode(node.id, false);
         this.updateGraph();
@@ -784,9 +775,9 @@
             this.nodes = this.nodes.filter(n => n.id !== nodeId);
             const el = document.getElementById(nodeId);
             if (el) el.remove();
+            compiler.removeViewerRenderer(nodeId);
 
             this.selectedNodeIds.delete(nodeId);
-            if (this.activeViewerNodeId === nodeId) this.activeViewerNodeId = null;
             deletedCount++;
           }
         });
@@ -932,7 +923,7 @@
         this.selectedNodeIds.delete(nodeId);
         const el = document.getElementById(nodeId);
         if (el) el.remove();
-        if (this.activeViewerNodeId === nodeId) this.activeViewerNodeId = null;
+        compiler.removeViewerRenderer(nodeId);
 
         this.updateGraph();
       }
@@ -941,13 +932,11 @@
         // 重複レンダー防止：既存の同一IDノードエレメントを削除
         const existingEl = document.getElementById(node.id);
         if (existingEl) existingEl.remove();
+        compiler.removeViewerRenderer(node.id);
 
         const def = NODE_DEFINITIONS[node.type];
         const nodeEl = document.createElement('div');
         nodeEl.className = 'node';
-        if (def.isViewerNode && this.activeViewerNodeId === node.id) {
-          nodeEl.classList.add('viewer-active');
-        }
         nodeEl.id = node.id;
         nodeEl.style.transform = `translate(${node.x}px, ${node.y}px)`;
 
@@ -959,19 +948,6 @@
         titleSpan.className = 'node-title';
         titleSpan.textContent = node.title;
         headerEl.appendChild(titleSpan);
-
-        if (def.isViewerNode) {
-          const eyeSpan = document.createElement('span');
-          eyeSpan.className = 'node-viewer-toggle';
-          eyeSpan.textContent = '👁';
-          eyeSpan.title = 'プレビューに表示 (Set Active Viewer)';
-          eyeSpan.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.activeViewerNodeId = (this.activeViewerNodeId === node.id) ? null : node.id;
-            this.updateGraph();
-          });
-          headerEl.appendChild(eyeSpan);
-        }
 
         if (!def.isOutputNode) {
           const closeSpan = document.createElement('span');
@@ -1274,6 +1250,21 @@
           });
         }
 
+        if (node.type === 'viewer') {
+          // ノード自身に入力値のプレビューを描画する小さなキャンバス
+          const viewerCanvas = document.createElement('canvas');
+          viewerCanvas.className = 'node-viewer-canvas';
+          viewerCanvas.width = 160;
+          viewerCanvas.height = 100;
+          bodyEl.appendChild(viewerCanvas);
+
+          // DOM挿入後（末尾のwrapperEl.appendChild後）に初回コンパイルできるよう次のマイクロタスクで実行
+          Promise.resolve().then(() => {
+            compiler.compileViewerNode(this, node);
+            compiler.renderViewerNode(node.id);
+          });
+        }
+
         const socketsEl = document.createElement('div');
         socketsEl.className = 'sockets-container';
 
@@ -1546,10 +1537,25 @@
       }
 
       updateGraph() {
-        // ビューワーノードは接続内容によって入出力の型が変わるため描画し直してから配線を更新する
-        this.nodes.filter(n => n.type === 'viewer').forEach(n => this.renderNode(n));
         this.updateWires();
         compiler.compileAndRender(this);
+
+        // Viewerノードは自身のミニキャンバスを持つため、ノードDOMは作り直さずに
+        // ソケットの型表示とプレビュー用シェーダーだけを更新する
+        this.nodes.filter(n => n.type === 'viewer').forEach(n => {
+          this.refreshViewerSocketColors(n);
+          compiler.compileViewerNode(this, n);
+        });
+      }
+
+      // Viewerノードの入出力の型は接続先によって変わるため、
+      // ノードDOMを作り直さずにソケットピンの色・データ属性だけを更新する
+      refreshViewerSocketColors(node) {
+        const type = resolveViewerType(node);
+        document.querySelectorAll(`#${node.id} .socket-pin`).forEach(pin => {
+          pin.dataset.type = type;
+          pin.style.borderColor = this.getSocketColor(type);
+        });
       }
 
       clear() {
@@ -1560,6 +1566,14 @@
       }
     }
 
+    // 全てのWebGL描画（メインプレビュー・Viewerノードのミニプレビュー共通）で使う頂点シェーダー
+    const VERTEX_SHADER_SOURCE = `
+      attribute vec2 a_position;
+      void main() {
+        gl_Position = vec4(a_position, 0.0, 1.0);
+      }
+    `;
+
     // ── GLSLコードジェネレータ＆コンパイラ ──
     class ShaderCompiler {
       constructor() {
@@ -1568,17 +1582,19 @@
         this.program = null;
         this.startTime = Date.now();
 
+        // Viewerノードのノード上プレビュー用（1ノードにつき1つの小さなWebGLレンダラー）
+        // key: nodeId, value: { canvas, gl, program, positionBuffer }
+        this.viewerRenderers = new Map();
+
         if (!this.gl) {
           showError('お使いのブラウザはWebGLに対応していません。');
           return;
         }
 
-        this.initGL();
+        this.positionBuffer = this.createQuadBuffer(this.gl);
       }
 
-      initGL() {
-        const gl = this.gl;
-
+      createQuadBuffer(gl) {
         const positions = new Float32Array([
           -1, -1,
            1, -1,
@@ -1591,16 +1607,12 @@
         const positionBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
-
-        this.positionBuffer = positionBuffer;
+        return positionBuffer;
       }
 
-      generateGLSL(graph) {
-        const outputNode = graph.nodes.find(n => NODE_DEFINITIONS[n.type].isOutputNode);
-        if (!outputNode) {
-          return { error: '出力ノードが見つかりません。' };
-        }
-
+      // ノード評価に必要な共通の仕組み（ヘルパー関数群・ノード評価器・出力文リスト）を構築する。
+      // generateGLSL（本来の出力ノード起点）と generateGLSLFromNode（Viewerノードのプレビュー起点）で共用する。
+      buildEvaluationContext(graph) {
         // 基本ヘッダー
         let headerCode = `precision mediump float;
 uniform vec2 u_resolution;
@@ -1947,37 +1959,54 @@ float voronoi(vec2 st) {
           evaluatedNodes.add(nodeId);
         };
 
-        evaluateNode(outputNode.id);
+        return {
+          headerCode,
+          nodeStatements,
+          evaluateNode,
+          customFunctions: () => customFunctions
+        };
+      }
 
-        // アクティブなビューワーノードがあれば、その値でプレビュー(gl_FragColor)を上書きする
-        // (グラフ本来の出力ノードは常に評価されるため、シェーダー自体は変わらず確認用のみ差し替わる)
-        const activeViewer = graph.activeViewerNodeId
-          ? graph.nodes.find(n => n.id === graph.activeViewerNodeId && n.type === 'viewer')
-          : null;
-
-        if (activeViewer) {
-          evaluateNode(activeViewer.id);
-
-          const viewerConn = graph.connections.find(c => c.toNode === activeViewer.id && c.toSocket === 'in');
-          let viewerType = 'vec3';
-          if (viewerConn) {
-            const fromNodeObj = graph.nodes.find(n => n.id === viewerConn.fromNode);
-            if (fromNodeObj) {
-              const outs = getEffectiveOutputs(fromNodeObj);
-              const outSocket = outs.find(o => o.id === viewerConn.fromSocket);
-              viewerType = outSocket ? outSocket.type : 'float';
-            }
-          }
-
-          const viewerVar = `${activeViewer.id}_out`;
-          let viewerColorExpr = viewerVar;
-          if (viewerType === 'float') viewerColorExpr = `vec3(${viewerVar})`;
-          else if (viewerType === 'vec2') viewerColorExpr = `vec3(${viewerVar}, 0.0)`;
-
-          nodeStatements.push(`gl_FragColor = vec4(${viewerColorExpr}, 1.0); // Viewer preview`);
+      generateGLSL(graph) {
+        const outputNode = graph.nodes.find(n => NODE_DEFINITIONS[n.type].isOutputNode);
+        if (!outputNode) {
+          return { error: '出力ノードが見つかりません。' };
         }
 
-        const fullCode = `${headerCode}\n${customFunctions}void main() {\n  ${nodeStatements.join('\n  ')}\n}`;
+        const built = this.buildEvaluationContext(graph);
+        built.evaluateNode(outputNode.id);
+
+        const fullCode = `${built.headerCode}\n${built.customFunctions()}void main() {\n  ${built.nodeStatements.join('\n  ')}\n}`;
+        return { code: fullCode };
+      }
+
+      // 任意のノードを起点に、そのノードの現在値を可視化するフラグメントシェーダーを生成する
+      // （Viewerノードの、ノード上プレビュー用）
+      generateGLSLFromNode(graph, rootNodeId) {
+        const rootNode = graph.nodes.find(n => n.id === rootNodeId);
+        if (!rootNode) {
+          return { error: 'ノードが見つかりません。' };
+        }
+
+        const built = this.buildEvaluationContext(graph);
+        built.evaluateNode(rootNodeId);
+
+        const rootDef = NODE_DEFINITIONS[rootNode.type];
+        if (!rootDef.isOutputNode) {
+          const outs = getEffectiveOutputs(rootNode);
+          const primary = outs[0];
+          if (primary) {
+            const varName = `${rootNodeId}_${primary.id}`;
+            let colorExpr = varName;
+            if (primary.type === 'float') colorExpr = `vec3(${varName})`;
+            else if (primary.type === 'vec2') colorExpr = `vec3(${varName}, 0.0)`;
+            built.nodeStatements.push(`gl_FragColor = vec4(${colorExpr}, 1.0);`);
+          } else {
+            built.nodeStatements.push(`gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);`);
+          }
+        }
+
+        const fullCode = `${built.headerCode}\n${built.customFunctions()}void main() {\n  ${built.nodeStatements.join('\n  ')}\n}`;
         return { code: fullCode };
       }
 
@@ -1995,15 +2024,8 @@ float voronoi(vec2 st) {
         document.getElementById('glslCodePreview').textContent = fragmentSource;
         document.getElementById('fullGlslCode').textContent = fragmentSource;
 
-        const vsSource = `
-          attribute vec2 a_position;
-          void main() {
-            gl_Position = vec4(a_position, 0.0, 1.0);
-          }
-        `;
-
-        const vs = this.createShader(gl, gl.VERTEX_SHADER, vsSource);
-        const fs = this.createShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+        const vs = this.createShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SOURCE, true);
+        const fs = this.createShader(gl, gl.FRAGMENT_SHADER, fragmentSource, true);
 
         if (!vs || !fs) return;
 
@@ -2021,18 +2043,96 @@ float voronoi(vec2 st) {
         this.program = program;
       }
 
-      createShader(gl, type, source) {
+      // reportErrors=false の場合、Viewerノードのミニプレビューなど
+      // メインのエラー表示を汚したくない箇所からのコンパイル失敗を静かに無視する
+      createShader(gl, type, source, reportErrors = false) {
         const shader = gl.createShader(type);
         gl.shaderSource(shader, source);
         gl.compileShader(shader);
 
         if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-          const info = gl.getShaderInfoLog(shader);
-          showError('シェーダーコンパイルエラー:\n' + info);
+          if (reportErrors) {
+            const info = gl.getShaderInfoLog(shader);
+            showError('シェーダーコンパイルエラー:\n' + info);
+          }
           gl.deleteShader(shader);
           return null;
         }
         return shader;
+      }
+
+      // Viewerノード用の小さなWebGLコンテキストを用意する（キャンバスが変わっていれば作り直す）
+      ensureViewerRenderer(nodeId, canvas) {
+        let vr = this.viewerRenderers.get(nodeId);
+        if (vr && vr.canvas === canvas) return vr;
+
+        const gl = canvas.getContext('webgl');
+        if (!gl) return null;
+
+        vr = { canvas, gl, program: null, positionBuffer: this.createQuadBuffer(gl) };
+        this.viewerRenderers.set(nodeId, vr);
+        return vr;
+      }
+
+      removeViewerRenderer(nodeId) {
+        this.viewerRenderers.delete(nodeId);
+      }
+
+      // Viewerノードのプレビュー用シェーダーを（再）コンパイルする
+      compileViewerNode(graph, node) {
+        const canvasEl = document.querySelector(`#${node.id} .node-viewer-canvas`);
+        if (!canvasEl) return;
+
+        const vr = this.ensureViewerRenderer(node.id, canvasEl);
+        if (!vr) return;
+
+        const res = this.generateGLSLFromNode(graph, node.id);
+        if (res.error) {
+          vr.program = null;
+          return;
+        }
+
+        const vs = this.createShader(vr.gl, vr.gl.VERTEX_SHADER, VERTEX_SHADER_SOURCE, false);
+        const fs = this.createShader(vr.gl, vr.gl.FRAGMENT_SHADER, res.code, false);
+        if (!vs || !fs) {
+          vr.program = null;
+          return;
+        }
+
+        const program = vr.gl.createProgram();
+        vr.gl.attachShader(program, vs);
+        vr.gl.attachShader(program, fs);
+        vr.gl.linkProgram(program);
+
+        if (!vr.gl.getProgramParameter(program, vr.gl.LINK_STATUS)) {
+          vr.program = null;
+          return;
+        }
+
+        vr.program = program;
+      }
+
+      // Viewerノードのミニキャンバスを1フレーム描画する
+      renderViewerNode(nodeId) {
+        const vr = this.viewerRenderers.get(nodeId);
+        if (!vr || !vr.program) return;
+
+        const gl = vr.gl;
+        gl.viewport(0, 0, vr.canvas.width, vr.canvas.height);
+        gl.useProgram(vr.program);
+
+        const resLocation = gl.getUniformLocation(vr.program, 'u_resolution');
+        gl.uniform2f(resLocation, vr.canvas.width, vr.canvas.height);
+
+        const timeLocation = gl.getUniformLocation(vr.program, 'u_time');
+        gl.uniform1f(timeLocation, (Date.now() - this.startTime) / 1000.0);
+
+        const posAttr = gl.getAttribLocation(vr.program, 'a_position');
+        gl.enableVertexAttribArray(posAttr);
+        gl.bindBuffer(gl.ARRAY_BUFFER, vr.positionBuffer);
+        gl.vertexAttribPointer(posAttr, 2, gl.FLOAT, false, 0, 0);
+
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
       }
 
       render() {
@@ -2129,7 +2229,6 @@ float voronoi(vec2 st) {
       const data = {
         version: 1,
         nextId: graph.nextId,
-        activeViewerNodeId: graph.activeViewerNodeId || null,
         nodes: graph.nodes.map(n => {
           const out = {
             id: n.id, type: n.type, title: n.title, x: n.x, y: n.y,
@@ -2168,7 +2267,6 @@ float voronoi(vec2 st) {
           }
 
           graph.clear();
-          graph.activeViewerNodeId = null;
 
           data.nodes.forEach(n => {
             if (!n || !NODE_DEFINITIONS[n.type]) return;
@@ -2192,10 +2290,6 @@ float voronoi(vec2 st) {
           graph.connections = data.connections.filter(c =>
             c && validNodeIds.has(c.fromNode) && validNodeIds.has(c.toNode)
           );
-
-          if (data.activeViewerNodeId && validNodeIds.has(data.activeViewerNodeId)) {
-            graph.activeViewerNodeId = data.activeViewerNodeId;
-          }
 
           let maxIdNum = 0;
           graph.nodes.forEach(n => {
@@ -2347,6 +2441,9 @@ float voronoi(vec2 st) {
 
       function renderLoop() {
         compiler.render();
+        graph.nodes.forEach(n => {
+          if (n.type === 'viewer') compiler.renderViewerNode(n.id);
+        });
         requestAnimationFrame(renderLoop);
       }
       renderLoop();
