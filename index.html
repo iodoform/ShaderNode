@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Shader Node Editor</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
@@ -34,6 +34,15 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
         GLSLコード表示
       </button>
+      <button id="btnExportJson" class="btn" title="ノードグラフをJSONファイルとしてダウンロード">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"></path><polyline points="7 10 12 15 17 10"></polyline><path d="M5 21h14"></path></svg>
+        JSON書き出し
+      </button>
+      <button id="btnImportJson" class="btn" title="JSONファイルからノードグラフを読み込み">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21V9"></path><polyline points="7 14 12 9 17 14"></polyline><path d="M5 3h14"></path></svg>
+        JSON読み込み
+      </button>
+      <input type="file" id="importJsonInput" accept="application/json,.json" style="display: none;">
       <button id="btnClear" class="btn">クリア</button>
     </div>
   </header>
@@ -52,10 +61,12 @@
     <!-- ノードグラフ・キャンバス (中央) -->
     <div class="canvas-container" id="canvasContainer">
       <div class="canvas-help-hint">
-        [中ドラッグ/Alt+左ドラッグ] 画面移動 | [ホイール] ズーム | [B / Shift+ドラッグ] 矩形選択 | [A] 全選択 | [Shift+D] 複製 | [X/Del] 削除
+        [中ドラッグ/Alt+左ドラッグ] 画面移動 | [ホイール] ズーム | [B / Shift+ドラッグ] 矩形選択 | [A] 全選択 | [Shift+D] 複製 | [X/Del] 削除<br>
+        [タッチ] 1本指ドラッグで画面移動 | 2本指でズーム・移動 | 下の「矩形選択」ボタンでエリア選択に切替
       </div>
 
       <div class="canvas-controls">
+        <button class="btn-icon" id="btnToggleSelect" title="矩形選択モードの切り替え（タッチ操作向け）">矩形選択</button>
         <button class="btn-icon" id="btnZoomOut" title="ズームアウト">-</button>
         <span class="zoom-level" id="zoomLevelText">100%</span>
         <button class="btn-icon" id="btnZoomIn" title="ズームイン">+</button>

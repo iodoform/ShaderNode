@@ -70,6 +70,7 @@
       display: flex;
       align-items: center;
       gap: 12px;
+      flex-wrap: wrap;
     }
 
     .btn {
@@ -189,6 +190,7 @@
     .cat-vector { background-color: #3f51b5; }
     .cat-color { background-color: var(--accent-purple); }
     .cat-output { background-color: var(--accent-red); }
+    .cat-viewer { background-color: var(--accent-orange); }
 
     /* Color Ramp 専用コントロールUI */
     .color-ramp-container {
@@ -204,6 +206,7 @@
       border: 1px solid #555;
       position: relative;
       cursor: pointer;
+      touch-action: none;
     }
 
     .color-ramp-stops {
@@ -222,6 +225,7 @@
       border: 1px solid #fff;
       border-radius: 2px 2px 4px 4px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+      touch-action: none;
     }
 
     .color-ramp-stop.selected {
@@ -256,6 +260,7 @@
       background-size: 20px 20px;
       overflow: hidden;
       cursor: crosshair;
+      touch-action: none;
     }
 
     .svg-connections {
@@ -311,6 +316,12 @@
     .btn-icon:hover {
       background: #444;
       border-color: #666;
+    }
+
+    .btn-icon.active {
+      background: var(--accent-blue);
+      border-color: var(--accent-blue);
+      color: #fff;
     }
 
     .zoom-level {
@@ -370,11 +381,18 @@
       flex-direction: column;
       font-size: 12px;
       backdrop-filter: blur(4px);
+      touch-action: none;
+      -webkit-touch-callout: none;
     }
 
     .node.selected {
       border-color: var(--border-active);
       box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.4), 0 8px 24px rgba(0,0,0,0.6);
+    }
+
+    .node.viewer-active {
+      border-color: var(--accent-orange);
+      box-shadow: 0 0 0 2px rgba(255, 152, 0, 0.5), 0 8px 24px rgba(0,0,0,0.6);
     }
 
     .node-header {
@@ -384,13 +402,24 @@
       font-weight: 600;
       font-size: 12px;
       display: flex;
-      justify-content: space-between;
+      justify-content: flex-start;
       align-items: center;
       color: #fff;
       border-bottom: 1px solid rgba(0,0,0,0.2);
+      gap: 8px;
     }
 
+    .node-viewer-toggle {
+      cursor: pointer;
+      opacity: 0.6;
+      font-size: 12px;
+      line-height: 1;
+    }
+    .node-viewer-toggle:hover { opacity: 1; }
+    .node.viewer-active .node-viewer-toggle { opacity: 1; }
+
     .node-title {
+      flex: 1;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -435,6 +464,7 @@
     }
 
     .socket-pin {
+      position: relative;
       width: 12px;
       height: 12px;
       border-radius: 50%;
@@ -442,6 +472,18 @@
       background-color: var(--socket-gray);
       cursor: pointer;
       transition: transform 0.15s, background-color 0.15s;
+      touch-action: none;
+    }
+
+    /* タッチ操作で掴みやすいよう、見た目を変えずに当たり判定だけ広げる */
+    .socket-pin::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 24px;
+      height: 24px;
+      transform: translate(-50%, -50%);
     }
 
     .socket-pin:hover {

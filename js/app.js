@@ -230,8 +230,106 @@
         color: '#f44336',
         inputs: [{ id: 'color', label: 'Surface Color', type: 'vec3', default: 'vec3(0.1)' }],
         isOutputNode: true
+      },
+      viewer: {
+        type: 'viewer',
+        title: 'Viewer',
+        category: 'viewer',
+        color: '#ff9800',
+        isViewerNode: true,
+        // 入出力の型は接続元に応じて動的に解決される（getEffectiveInputs/Outputs参照）
+        inputs: [{ id: 'in', label: 'Value', type: 'vec3', default: 'vec3(0.0)' }],
+        outputs: [{ id: 'out', label: 'Value', type: 'vec3' }]
       }
     };
+
+    // Mathノードの演算子ごとに実際に使用する入力(a/b/c)の数
+    const MATH_OP_ARITY = {
+      ADD: 2, SUB: 2, MUL: 2, DIV: 2, MAD: 3, POWER: 2, LOG: 1, SQRT: 1, INVSQRT: 1,
+      ABS: 1, EXP: 1, MIN: 2, MAX: 2, LESS: 2, GREATER: 2, SIGN: 1, COMPARE: 3,
+      SMOOTH_MIN: 3, SMOOTH_MAX: 3, ROUND: 1, FLOOR: 1, CEIL: 1, TRUNC: 1, FRACT: 1,
+      MOD: 2, WRAP: 3, SNAP: 2, PINGPONG: 2, SIN: 1, COS: 1, TAN: 1, ASIN: 1, ACOS: 1,
+      ATAN: 1, ATAN2: 2, RADIANS: 1, DEGREES: 1
+    };
+
+    // Vector Mathノードの演算子ごとに使用する入力ソケットと出力ソケット種別
+    const VECTOR_MATH_OP_SPEC = {
+      ADD: { inputs: ['a', 'b'], output: 'vec' },
+      SUB: { inputs: ['a', 'b'], output: 'vec' },
+      MUL: { inputs: ['a', 'b'], output: 'vec' },
+      DIV: { inputs: ['a', 'b'], output: 'vec' },
+      CROSS: { inputs: ['a', 'b'], output: 'vec' },
+      DOT: { inputs: ['a', 'b'], output: 'val' },
+      DISTANCE: { inputs: ['a', 'b'], output: 'val' },
+      LENGTH: { inputs: ['a'], output: 'val' },
+      SCALE: { inputs: ['a', 'scale'], output: 'vec' },
+      NORMALIZE: { inputs: ['a'], output: 'vec' },
+      ABS: { inputs: ['a'], output: 'vec' },
+      MIN: { inputs: ['a', 'b'], output: 'vec' },
+      MAX: { inputs: ['a', 'b'], output: 'vec' },
+      FLOOR: { inputs: ['a'], output: 'vec' },
+      CEIL: { inputs: ['a'], output: 'vec' },
+      FRACT: { inputs: ['a'], output: 'vec' },
+      MOD: { inputs: ['a', 'b'], output: 'vec' },
+      SIN: { inputs: ['a'], output: 'vec' },
+      COS: { inputs: ['a'], output: 'vec' },
+      TAN: { inputs: ['a'], output: 'vec' },
+      REFLECT: { inputs: ['a', 'b'], output: 'vec' }
+    };
+
+    // ノードの種類・現在の設定に応じて実際に表示/使用すべき入力ソケット一覧を返す
+    function getEffectiveInputs(node) {
+      const def = NODE_DEFINITIONS[node.type];
+      if (!def) return [];
+
+      if (node.type === 'math') {
+        const op = (node.controlsVal && node.controlsVal.op) || 'ADD';
+        const arity = MATH_OP_ARITY[op] || 2;
+        return def.inputs.slice(0, arity);
+      }
+
+      if (node.type === 'vectorMath') {
+        const op = (node.controlsVal && node.controlsVal.op) || 'ADD';
+        const spec = VECTOR_MATH_OP_SPEC[op] || { inputs: ['a', 'b'] };
+        return spec.inputs.map(id => def.inputs.find(i => i.id === id)).filter(Boolean);
+      }
+
+      if (node.type === 'viewer') {
+        return [{ id: 'in', label: 'Value', type: resolveViewerType(node) }];
+      }
+
+      return def.inputs || [];
+    }
+
+    // ノードの種類・現在の設定に応じて実際に表示/使用すべき出力ソケット一覧を返す
+    function getEffectiveOutputs(node) {
+      const def = NODE_DEFINITIONS[node.type];
+      if (!def) return [];
+
+      if (node.type === 'vectorMath') {
+        const op = (node.controlsVal && node.controlsVal.op) || 'ADD';
+        const spec = VECTOR_MATH_OP_SPEC[op] || { output: 'vec' };
+        return def.outputs.filter(o => o.id === spec.output);
+      }
+
+      if (node.type === 'viewer') {
+        return [{ id: 'out', label: 'Value', type: resolveViewerType(node) }];
+      }
+
+      return def.outputs || [];
+    }
+
+    // Viewerノードの入出力型を、現在接続されている上流ソケットの型から解決する
+    function resolveViewerType(node) {
+      if (!graph) return 'vec3';
+      const conn = graph.connections.find(c => c.toNode === node.id && c.toSocket === 'in');
+      if (!conn) return 'vec3';
+      const fromNode = graph.nodes.find(n => n.id === conn.fromNode);
+      if (!fromNode) return 'vec3';
+      const outs = getEffectiveOutputs(fromNode);
+      const outSocket = outs.find(o => o.id === conn.fromSocket);
+      return outSocket ? outSocket.type : 'vec3';
+    }
 
     // ── アプリケーション状態 ──
     class ShaderNodeGraph {
@@ -259,6 +357,13 @@
         this.connectingSocket = null;
         this.tempWirePos = { x: 0, y: 0 };
 
+        // ── ビューワーノード（プレビュー確認用）──
+        this.activeViewerNodeId = null;
+
+        // ── タッチ操作用の状態 ──
+        this.touchSelectMode = false;
+        this.pinchState = null;
+
         this.wrapperEl = document.getElementById('nodeWrapper');
         this.svgEl = document.getElementById('svgConnections');
         this.containerEl = document.getElementById('canvasContainer');
@@ -266,6 +371,7 @@
 
         this.initEventListeners();
         this.initKeyboardShortcuts();
+        this.initTouchEventListeners();
         this.updateTransform();
       }
 
@@ -347,7 +453,7 @@
 
           if (key === 'b' && !e.ctrlKey && !e.metaKey) {
             e.preventDefault();
-            showToast('ドラッグしてノードを矩形選択します');
+            this.setTouchSelectMode(!this.touchSelectMode);
           }
 
           if ((e.ctrlKey || e.metaKey) && key === 'c') {
@@ -360,6 +466,116 @@
             this.pasteNodes();
           }
         });
+      }
+
+      // ── iPad等のタッチ操作対応 ──
+      // 1本指: 背景ドラッグでパン（矩形選択モード時は範囲選択）/ ノード・ソケットのドラッグは各要素のtouchstartが処理
+      // 2本指: ピンチでズーム、ドラッグでパン
+      initTouchEventListeners() {
+        const toSyntheticEvent = (touch, extra = {}) => ({
+          clientX: touch.clientX,
+          clientY: touch.clientY,
+          shiftKey: false,
+          button: 0,
+          ...extra
+        });
+
+        this.containerEl.addEventListener('touchstart', (e) => {
+          if (e.touches.length === 1) {
+            const target = e.target;
+            const isBackgroundTouch = target === this.containerEl || target === this.svgEl;
+            if (!isBackgroundTouch) return;
+
+            const t = e.touches[0];
+            if (this.touchSelectMode) {
+              this.deselectAll();
+              this.startBoxSelection(toSyntheticEvent(t));
+            } else {
+              this.isPanning = true;
+              this.panStart = { x: t.clientX - this.panX, y: t.clientY - this.panY };
+            }
+          } else if (e.touches.length === 2) {
+            e.preventDefault();
+            this.isPanning = false;
+            this.isBoxSelecting = false;
+            if (this.selectionBoxEl) this.selectionBoxEl.style.display = 'none';
+            this.startPinch(e);
+          }
+        }, { passive: false });
+
+        this.containerEl.addEventListener('touchmove', (e) => {
+          if (e.touches.length === 2) {
+            e.preventDefault();
+            this.updatePinch(e);
+          }
+        }, { passive: false });
+
+        this.containerEl.addEventListener('touchend', (e) => {
+          if (e.touches.length < 2) this.pinchState = null;
+        });
+        this.containerEl.addEventListener('touchcancel', (e) => {
+          if (e.touches.length < 2) this.pinchState = null;
+        });
+
+        // ノードドラッグ／ソケット接続／背景パン／矩形選択の続き（mousemove/mouseupと同じ状態を利用）
+        window.addEventListener('touchmove', (e) => {
+          if (e.touches.length !== 1) return;
+          if (!(this.isPanning || this.isBoxSelecting || this.draggingNodes.length > 0 || this.connectingSocket)) return;
+          e.preventDefault();
+          this.onMouseMove(toSyntheticEvent(e.touches[0]));
+        }, { passive: false });
+
+        window.addEventListener('touchend', (e) => {
+          if (!(this.isPanning || this.isBoxSelecting || this.draggingNodes.length > 0 || this.connectingSocket)) return;
+          const t = e.changedTouches[0];
+          this.onMouseUp(toSyntheticEvent(t || { clientX: 0, clientY: 0 }));
+        });
+        window.addEventListener('touchcancel', (e) => {
+          if (!(this.isPanning || this.isBoxSelecting || this.draggingNodes.length > 0 || this.connectingSocket)) return;
+          const t = e.changedTouches[0];
+          this.onMouseUp(toSyntheticEvent(t || { clientX: 0, clientY: 0 }));
+        });
+      }
+
+      setTouchSelectMode(enabled) {
+        this.touchSelectMode = enabled;
+        const btn = document.getElementById('btnToggleSelect');
+        if (btn) btn.classList.toggle('active', enabled);
+        showToast(enabled ? '矩形選択モード ON（ドラッグでエリア選択）' : '矩形選択モード OFF（ドラッグで画面移動）');
+      }
+
+      startPinch(e) {
+        const [t1, t2] = e.touches;
+        const rect = this.containerEl.getBoundingClientRect();
+        this.pinchState = {
+          startDist: Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY),
+          startZoom: this.zoom,
+          startPanX: this.panX,
+          startPanY: this.panY,
+          centerX: (t1.clientX + t2.clientX) / 2 - rect.left,
+          centerY: (t1.clientY + t2.clientY) / 2 - rect.top
+        };
+      }
+
+      updatePinch(e) {
+        if (!this.pinchState || e.touches.length !== 2) return;
+        const [t1, t2] = e.touches;
+        const rect = this.containerEl.getBoundingClientRect();
+        const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+        const centerX = (t1.clientX + t2.clientX) / 2 - rect.left;
+        const centerY = (t1.clientY + t2.clientY) / 2 - rect.top;
+
+        const newZoom = Math.min(Math.max(this.pinchState.startZoom * (dist / this.pinchState.startDist), 0.25), 2.5);
+
+        const worldX = (this.pinchState.centerX - this.pinchState.startPanX) / this.pinchState.startZoom;
+        const worldY = (this.pinchState.centerY - this.pinchState.startPanY) / this.pinchState.startZoom;
+
+        this.panX = centerX - worldX * newZoom;
+        this.panY = centerY - worldY * newZoom;
+        this.zoom = newZoom;
+
+        this.updateTransform();
+        this.updateWires();
       }
 
       screenToWorld(clientX, clientY) {
@@ -428,6 +644,11 @@
         }
 
         this.nodes.push(node);
+
+        if (type === 'viewer') {
+          this.activeViewerNodeId = node.id;
+        }
+
         this.renderNode(node);
         this.selectNode(node.id, false);
         this.updateGraph();
@@ -554,6 +775,7 @@
             if (el) el.remove();
 
             this.selectedNodeIds.delete(nodeId);
+            if (this.activeViewerNodeId === nodeId) this.activeViewerNodeId = null;
             deletedCount++;
           }
         });
@@ -699,6 +921,7 @@
         this.selectedNodeIds.delete(nodeId);
         const el = document.getElementById(nodeId);
         if (el) el.remove();
+        if (this.activeViewerNodeId === nodeId) this.activeViewerNodeId = null;
 
         this.updateGraph();
       }
@@ -711,17 +934,33 @@
         const def = NODE_DEFINITIONS[node.type];
         const nodeEl = document.createElement('div');
         nodeEl.className = 'node';
+        if (def.isViewerNode && this.activeViewerNodeId === node.id) {
+          nodeEl.classList.add('viewer-active');
+        }
         nodeEl.id = node.id;
         nodeEl.style.transform = `translate(${node.x}px, ${node.y}px)`;
 
         const headerEl = document.createElement('div');
         headerEl.className = 'node-header';
         headerEl.style.backgroundColor = def.color;
-        
+
         const titleSpan = document.createElement('span');
         titleSpan.className = 'node-title';
         titleSpan.textContent = node.title;
         headerEl.appendChild(titleSpan);
+
+        if (def.isViewerNode) {
+          const eyeSpan = document.createElement('span');
+          eyeSpan.className = 'node-viewer-toggle';
+          eyeSpan.textContent = '👁';
+          eyeSpan.title = 'プレビューに表示 (Set Active Viewer)';
+          eyeSpan.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.activeViewerNodeId = (this.activeViewerNodeId === node.id) ? null : node.id;
+            this.updateGraph();
+          });
+          headerEl.appendChild(eyeSpan);
+        }
 
         if (!def.isOutputNode) {
           const closeSpan = document.createElement('span');
@@ -734,9 +973,7 @@
           headerEl.appendChild(closeSpan);
         }
 
-        headerEl.addEventListener('mousedown', (e) => {
-          if (e.button !== 0) return;
-
+        const handleHeaderDragStart = (e) => {
           if (!this.selectedNodeIds.has(node.id)) {
             if (e.shiftKey) {
               this.selectNode(node.id, true);
@@ -764,7 +1001,24 @@
           });
 
           e.stopPropagation();
+        };
+
+        headerEl.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          handleHeaderDragStart(e);
         });
+
+        headerEl.addEventListener('touchstart', (e) => {
+          if (e.touches.length !== 1) return;
+          e.preventDefault();
+          const t = e.touches[0];
+          handleHeaderDragStart({
+            clientX: t.clientX,
+            clientY: t.clientY,
+            shiftKey: false,
+            stopPropagation: () => e.stopPropagation()
+          });
+        }, { passive: false });
 
         const bodyEl = document.createElement('div');
         bodyEl.className = 'node-body';
@@ -812,28 +1066,55 @@
               stopEl.style.left = `${stop.pos * 100}%`;
               stopEl.style.backgroundColor = stop.color;
 
-              stopEl.addEventListener('mousedown', (e) => {
-                e.stopPropagation();
+              const beginStopDrag = (clientX) => {
                 node.activeStopIndex = idx;
                 renderStops();
                 updateColorInput();
 
-                const onMove = (moveEvt) => {
+                const applyMove = (moveClientX) => {
                   const barRect = rampBar.getBoundingClientRect();
-                  let newPos = (moveEvt.clientX - barRect.left) / barRect.width;
+                  let newPos = (moveClientX - barRect.left) / barRect.width;
                   stop.pos = Math.min(Math.max(newPos, 0.0), 1.0);
                   stopEl.style.left = `${stop.pos * 100}%`;
                   if (posInput) posInput.value = stop.pos.toFixed(2);
                   updateRampBarGradient();
                   this.updateGraph();
                 };
+
+                const onMove = (moveEvt) => applyMove(moveEvt.clientX);
                 const onUp = () => {
                   window.removeEventListener('mousemove', onMove);
                   window.removeEventListener('mouseup', onUp);
                 };
                 window.addEventListener('mousemove', onMove);
                 window.addEventListener('mouseup', onUp);
+
+                const onTouchMove = (touchEvt) => {
+                  if (touchEvt.touches.length !== 1) return;
+                  touchEvt.preventDefault();
+                  applyMove(touchEvt.touches[0].clientX);
+                };
+                const onTouchEnd = () => {
+                  window.removeEventListener('touchmove', onTouchMove);
+                  window.removeEventListener('touchend', onTouchEnd);
+                  window.removeEventListener('touchcancel', onTouchEnd);
+                };
+                window.addEventListener('touchmove', onTouchMove, { passive: false });
+                window.addEventListener('touchend', onTouchEnd);
+                window.addEventListener('touchcancel', onTouchEnd);
+              };
+
+              stopEl.addEventListener('mousedown', (e) => {
+                e.stopPropagation();
+                beginStopDrag(e.clientX);
               });
+
+              stopEl.addEventListener('touchstart', (e) => {
+                if (e.touches.length !== 1) return;
+                e.stopPropagation();
+                e.preventDefault();
+                beginStopDrag(e.touches[0].clientX);
+              }, { passive: false });
 
               stopsContainer.appendChild(stopEl);
             });
@@ -944,6 +1225,11 @@
               });
               select.addEventListener('change', (e) => {
                 node.controlsVal[ctrl.id] = e.target.value;
+                if (node.type === 'math' || node.type === 'vectorMath') {
+                  // 演算子によって入出力ソケットの数・型が変わるため再構築する
+                  this.pruneInvalidConnections(node);
+                  this.renderNode(node);
+                }
                 this.updateGraph();
               });
               ctrlContainer.appendChild(select);
@@ -978,61 +1264,73 @@
         const socketsEl = document.createElement('div');
         socketsEl.className = 'sockets-container';
 
+        const effInputs = getEffectiveInputs(node);
+        const effOutputs = getEffectiveOutputs(node);
+
+        const bindSocketEvents = (pin, socketId, isOutput, type) => {
+          pin.addEventListener('mousedown', (e) => this.onSocketMouseDown(e, node.id, socketId, isOutput, type));
+          pin.addEventListener('touchstart', (e) => {
+            if (e.touches.length !== 1) return;
+            e.preventDefault();
+            const t = e.touches[0];
+            this.onSocketMouseDown({
+              clientX: t.clientX,
+              clientY: t.clientY,
+              button: 0,
+              stopPropagation: () => e.stopPropagation()
+            }, node.id, socketId, isOutput, type);
+          }, { passive: false });
+        };
+
         const inputsCol = document.createElement('div');
         inputsCol.className = 'sockets-column inputs';
-        if (def.inputs) {
-          def.inputs.forEach(inp => {
-            const row = document.createElement('div');
-            row.className = 'socket-row';
+        effInputs.forEach(inp => {
+          const row = document.createElement('div');
+          row.className = 'socket-row';
 
-            const pin = document.createElement('div');
-            pin.className = 'socket-pin';
-            pin.dataset.nodeId = node.id;
-            pin.dataset.socketId = inp.id;
-            pin.dataset.isOutput = 'false';
-            pin.dataset.type = inp.type;
+          const pin = document.createElement('div');
+          pin.className = 'socket-pin';
+          pin.dataset.nodeId = node.id;
+          pin.dataset.socketId = inp.id;
+          pin.dataset.isOutput = 'false';
+          pin.dataset.type = inp.type;
 
-            pin.style.borderColor = this.getSocketColor(inp.type);
+          pin.style.borderColor = this.getSocketColor(inp.type);
+          bindSocketEvents(pin, inp.id, false, inp.type);
 
-            pin.addEventListener('mousedown', (e) => this.onSocketMouseDown(e, node.id, inp.id, false, inp.type));
+          const label = document.createElement('span');
+          label.className = 'socket-label';
+          label.textContent = inp.label;
 
-            const label = document.createElement('span');
-            label.className = 'socket-label';
-            label.textContent = inp.label;
-
-            row.appendChild(pin);
-            row.appendChild(label);
-            inputsCol.appendChild(row);
-          });
-        }
+          row.appendChild(pin);
+          row.appendChild(label);
+          inputsCol.appendChild(row);
+        });
 
         const outputsCol = document.createElement('div');
         outputsCol.className = 'sockets-column outputs';
-        if (def.outputs) {
-          def.outputs.forEach(out => {
-            const row = document.createElement('div');
-            row.className = 'socket-row';
+        effOutputs.forEach(out => {
+          const row = document.createElement('div');
+          row.className = 'socket-row';
 
-            const label = document.createElement('span');
-            label.className = 'socket-label';
-            label.textContent = out.label;
+          const label = document.createElement('span');
+          label.className = 'socket-label';
+          label.textContent = out.label;
 
-            const pin = document.createElement('div');
-            pin.className = 'socket-pin';
-            pin.dataset.nodeId = node.id;
-            pin.dataset.socketId = out.id;
-            pin.dataset.isOutput = 'true';
-            pin.dataset.type = out.type;
+          const pin = document.createElement('div');
+          pin.className = 'socket-pin';
+          pin.dataset.nodeId = node.id;
+          pin.dataset.socketId = out.id;
+          pin.dataset.isOutput = 'true';
+          pin.dataset.type = out.type;
 
-            pin.style.borderColor = this.getSocketColor(out.type);
+          pin.style.borderColor = this.getSocketColor(out.type);
+          bindSocketEvents(pin, out.id, true, out.type);
 
-            pin.addEventListener('mousedown', (e) => this.onSocketMouseDown(e, node.id, out.id, true, out.type));
-
-            row.appendChild(label);
-            row.appendChild(pin);
-            outputsCol.appendChild(row);
-          });
-        }
+          row.appendChild(label);
+          row.appendChild(pin);
+          outputsCol.appendChild(row);
+        });
 
         socketsEl.appendChild(inputsCol);
         socketsEl.appendChild(outputsCol);
@@ -1211,6 +1509,18 @@
         this.updateGraph();
       }
 
+      // Math/Vector Mathの演算子変更などでソケット構成が変わった際、
+      // 存在しなくなったソケットに繋がっていた接続を取り除く
+      pruneInvalidConnections(node) {
+        const validInputIds = new Set(getEffectiveInputs(node).map(i => i.id));
+        const validOutputIds = new Set(getEffectiveOutputs(node).map(o => o.id));
+        this.connections = this.connections.filter(c => {
+          if (c.toNode === node.id && !validInputIds.has(c.toSocket)) return false;
+          if (c.fromNode === node.id && !validOutputIds.has(c.fromSocket)) return false;
+          return true;
+        });
+      }
+
       createBezierPath(x1, y1, x2, y2) {
         const dx = Math.abs(x2 - x1) * 0.5;
         const curveOffset = Math.max(dx, 50);
@@ -1220,6 +1530,8 @@
       }
 
       updateGraph() {
+        // ビューワーノードは接続内容によって入出力の型が変わるため描画し直してから配線を更新する
+        this.nodes.filter(n => n.type === 'viewer').forEach(n => this.renderNode(n));
         this.updateWires();
         compiler.compileAndRender(this);
       }
@@ -1342,8 +1654,8 @@ float voronoi(vec2 st) {
               const fromNodeObj = graph.nodes.find(n => n.id === conn.fromNode);
               if (!fromNodeObj) return defaultVal;
 
-              const fromDef = NODE_DEFINITIONS[fromNodeObj.type];
-              const outSocket = fromDef.outputs ? fromDef.outputs.find(o => o.id === conn.fromSocket) : null;
+              const fromOutputs = getEffectiveOutputs(fromNodeObj);
+              const outSocket = fromOutputs.find(o => o.id === conn.fromSocket);
               const fromType = outSocket ? outSocket.type : 'float';
               const varName = `${conn.fromNode}_${conn.fromSocket}`;
 
@@ -1594,6 +1906,25 @@ float voronoi(vec2 st) {
               nodeStatements.push(`gl_FragColor = vec4(${finalColor}, 1.0);`);
               break;
             }
+
+            case 'viewer': {
+              // Viewerノードの出力は入力と同じ値をそのまま通す（パススルー）
+              const conn = graph.connections.find(c => c.toNode === nodeId && c.toSocket === 'in');
+              let inType = 'vec3';
+              let inExpr = 'vec3(0.0)';
+              if (conn) {
+                evaluateNode(conn.fromNode);
+                const fromNodeObj = graph.nodes.find(n => n.id === conn.fromNode);
+                if (fromNodeObj) {
+                  const outs = getEffectiveOutputs(fromNodeObj);
+                  const outSocket = outs.find(o => o.id === conn.fromSocket);
+                  inType = outSocket ? outSocket.type : 'float';
+                  inExpr = `${conn.fromNode}_${conn.fromSocket}`;
+                }
+              }
+              nodeStatements.push(`${inType} ${varPrefix}_out = ${inExpr};`);
+              break;
+            }
           }
 
           evalStack.delete(nodeId);
@@ -1601,6 +1932,34 @@ float voronoi(vec2 st) {
         };
 
         evaluateNode(outputNode.id);
+
+        // アクティブなビューワーノードがあれば、その値でプレビュー(gl_FragColor)を上書きする
+        // (グラフ本来の出力ノードは常に評価されるため、シェーダー自体は変わらず確認用のみ差し替わる)
+        const activeViewer = graph.activeViewerNodeId
+          ? graph.nodes.find(n => n.id === graph.activeViewerNodeId && n.type === 'viewer')
+          : null;
+
+        if (activeViewer) {
+          evaluateNode(activeViewer.id);
+
+          const viewerConn = graph.connections.find(c => c.toNode === activeViewer.id && c.toSocket === 'in');
+          let viewerType = 'vec3';
+          if (viewerConn) {
+            const fromNodeObj = graph.nodes.find(n => n.id === viewerConn.fromNode);
+            if (fromNodeObj) {
+              const outs = getEffectiveOutputs(fromNodeObj);
+              const outSocket = outs.find(o => o.id === viewerConn.fromSocket);
+              viewerType = outSocket ? outSocket.type : 'float';
+            }
+          }
+
+          const viewerVar = `${activeViewer.id}_out`;
+          let viewerColorExpr = viewerVar;
+          if (viewerType === 'float') viewerColorExpr = `vec3(${viewerVar})`;
+          else if (viewerType === 'vec2') viewerColorExpr = `vec3(${viewerVar}, 0.0)`;
+
+          nodeStatements.push(`gl_FragColor = vec4(${viewerColorExpr}, 1.0); // Viewer preview`);
+        }
 
         const fullCode = `${headerCode}\n${customFunctions}void main() {\n  ${nodeStatements.join('\n  ')}\n}`;
         return { code: fullCode };
@@ -1713,7 +2072,8 @@ float voronoi(vec2 st) {
         math: { name: '演算 (Math)', class: 'cat-math' },
         vector: { name: 'ベクトル (Vector)', class: 'cat-vector' },
         color: { name: 'カラー (Color)', class: 'cat-color' },
-        output: { name: '出力 (Output)', class: 'cat-output' }
+        output: { name: '出力 (Output)', class: 'cat-output' },
+        viewer: { name: 'ビューワー (Viewer)', class: 'cat-viewer' }
       };
 
       Object.keys(categories).forEach(catKey => {
@@ -1746,6 +2106,106 @@ float voronoi(vec2 st) {
 
         palette.appendChild(catGroup);
       });
+    }
+
+    // ── ノードグラフのJSON書き出し／読み込み ──
+    function exportGraphJSON() {
+      const data = {
+        version: 1,
+        nextId: graph.nextId,
+        activeViewerNodeId: graph.activeViewerNodeId || null,
+        nodes: graph.nodes.map(n => {
+          const out = {
+            id: n.id, type: n.type, title: n.title, x: n.x, y: n.y,
+            controlsVal: n.controlsVal, inputsVal: n.inputsVal
+          };
+          if (n.stops) {
+            out.stops = n.stops;
+            out.activeStopIndex = n.activeStopIndex;
+          }
+          return out;
+        }),
+        connections: graph.connections.map(c => ({
+          id: c.id, fromNode: c.fromNode, fromSocket: c.fromSocket, toNode: c.toNode, toSocket: c.toSocket
+        }))
+      };
+
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `shader-node-graph-${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast('ノードグラフをJSONとしてダウンロードしました');
+    }
+
+    function importGraphJSON(file) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = JSON.parse(e.target.result);
+          if (!data || !Array.isArray(data.nodes) || !Array.isArray(data.connections)) {
+            throw new Error('不正なファイル形式です');
+          }
+
+          graph.clear();
+          graph.activeViewerNodeId = null;
+
+          data.nodes.forEach(n => {
+            if (!n || !NODE_DEFINITIONS[n.type]) return;
+            const node = {
+              id: n.id,
+              type: n.type,
+              title: n.title || NODE_DEFINITIONS[n.type].title,
+              x: typeof n.x === 'number' ? n.x : 0,
+              y: typeof n.y === 'number' ? n.y : 0,
+              controlsVal: n.controlsVal || {},
+              inputsVal: n.inputsVal || {}
+            };
+            if (n.stops) {
+              node.stops = n.stops;
+              node.activeStopIndex = n.activeStopIndex || 0;
+            }
+            graph.nodes.push(node);
+          });
+
+          const validNodeIds = new Set(graph.nodes.map(n => n.id));
+          graph.connections = data.connections.filter(c =>
+            c && validNodeIds.has(c.fromNode) && validNodeIds.has(c.toNode)
+          );
+
+          if (data.activeViewerNodeId && validNodeIds.has(data.activeViewerNodeId)) {
+            graph.activeViewerNodeId = data.activeViewerNodeId;
+          }
+
+          let maxIdNum = 0;
+          graph.nodes.forEach(n => {
+            const match = /^node_(\d+)$/.exec(n.id);
+            if (match) maxIdNum = Math.max(maxIdNum, parseInt(match[1], 10));
+          });
+          graph.nextId = typeof data.nextId === 'number' ? Math.max(data.nextId, maxIdNum + 1) : maxIdNum + 1;
+
+          if (!graph.nodes.some(n => NODE_DEFINITIONS[n.type] && NODE_DEFINITIONS[n.type].isOutputNode)) {
+            graph.nodes.push({
+              id: `node_${graph.nextId++}`,
+              type: 'output',
+              title: NODE_DEFINITIONS.output.title,
+              x: 300, y: 150,
+              controlsVal: {}, inputsVal: {}
+            });
+          }
+
+          graph.nodes.forEach(n => graph.renderNode(n));
+          graph.updateGraph();
+          showToast('JSONからノードグラフを読み込みました');
+        } catch (err) {
+          showToast('読み込みに失敗しました: ' + err.message);
+        }
+      };
+      reader.readAsText(file);
     }
 
     function loadPreset(name) {
@@ -1851,6 +2311,23 @@ float voronoi(vec2 st) {
       document.getElementById('closeModal').addEventListener('click', () => {
         modal.classList.remove('active');
       });
+
+      document.getElementById('btnExportJson').addEventListener('click', () => exportGraphJSON());
+
+      const importInput = document.getElementById('importJsonInput');
+      document.getElementById('btnImportJson').addEventListener('click', () => importInput.click());
+      importInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) importGraphJSON(file);
+        e.target.value = '';
+      });
+
+      const btnToggleSelect = document.getElementById('btnToggleSelect');
+      if (btnToggleSelect) {
+        btnToggleSelect.addEventListener('click', () => {
+          graph.setTouchSelectMode(!graph.touchSelectMode);
+        });
+      }
 
       function renderLoop() {
         compiler.render();
