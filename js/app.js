@@ -363,6 +363,8 @@
         // ── タッチ操作用の状態 ──
         this.touchSelectMode = false;
         this.pinchState = null;
+        // タッチ操作直後にブラウザが合成する「ゴーストmousedown」を無視するための記録
+        this.lastTouchTs = 0;
 
         this.wrapperEl = document.getElementById('nodeWrapper');
         this.svgEl = document.getElementById('svgConnections');
@@ -394,6 +396,9 @@
         }, { passive: false });
 
         this.containerEl.addEventListener('mousedown', (e) => {
+          // タッチ操作の直後にブラウザが送ってくる合成mousedownは無視する（矩形選択の暴発を防ぐ）
+          if (Date.now() - this.lastTouchTs < 600) return;
+
           const isMiddleButton = e.button === 1;
           const isAltLeftClick = e.button === 0 && e.altKey;
           const isBackgroundClick = e.target === this.containerEl || e.target === this.svgEl;
@@ -480,12 +485,18 @@
           ...extra
         });
 
+        // どこがタッチされても、合成マウスイベント除去のために最終タッチ時刻を記録する（キャプチャフェーズで確実に先に実行）
+        document.addEventListener('touchstart', () => {
+          this.lastTouchTs = Date.now();
+        }, { passive: true, capture: true });
+
         this.containerEl.addEventListener('touchstart', (e) => {
           if (e.touches.length === 1) {
             const target = e.target;
             const isBackgroundTouch = target === this.containerEl || target === this.svgEl;
             if (!isBackgroundTouch) return;
 
+            e.preventDefault();
             const t = e.touches[0];
             if (this.touchSelectMode) {
               this.deselectAll();
@@ -1005,6 +1016,7 @@
 
         headerEl.addEventListener('mousedown', (e) => {
           if (e.button !== 0) return;
+          if (Date.now() - this.lastTouchTs < 600) return; // 合成mousedownを無視
           handleHeaderDragStart(e);
         });
 
@@ -1105,6 +1117,7 @@
               };
 
               stopEl.addEventListener('mousedown', (e) => {
+                if (Date.now() - this.lastTouchTs < 600) return; // 合成mousedownを無視
                 e.stopPropagation();
                 beginStopDrag(e.clientX);
               });
@@ -1268,7 +1281,10 @@
         const effOutputs = getEffectiveOutputs(node);
 
         const bindSocketEvents = (pin, socketId, isOutput, type) => {
-          pin.addEventListener('mousedown', (e) => this.onSocketMouseDown(e, node.id, socketId, isOutput, type));
+          pin.addEventListener('mousedown', (e) => {
+            if (Date.now() - this.lastTouchTs < 600) return; // 合成mousedownを無視
+            this.onSocketMouseDown(e, node.id, socketId, isOutput, type);
+          });
           pin.addEventListener('touchstart', (e) => {
             if (e.touches.length !== 1) return;
             e.preventDefault();
