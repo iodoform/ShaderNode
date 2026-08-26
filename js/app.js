@@ -1255,7 +1255,7 @@
           const viewerCanvas = document.createElement('canvas');
           viewerCanvas.className = 'node-viewer-canvas';
           viewerCanvas.width = 160;
-          viewerCanvas.height = 100;
+          viewerCanvas.height = 160;
           bodyEl.appendChild(viewerCanvas);
 
           // DOM挿入後（末尾のwrapperEl.appendChild後）に初回コンパイルできるよう次のマイクロタスクで実行
