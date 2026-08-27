@@ -1028,6 +1028,7 @@
             });
             select.addEventListener('change', (e) => {
               node.controlsVal.interp = e.target.value;
+              updateRampBarGradient();
               this.updateGraph();
             });
             rampContainer.appendChild(select);
@@ -1035,10 +1036,50 @@
 
           const rampBar = document.createElement('div');
           rampBar.className = 'color-ramp-bar';
-          
+
+          // 補間方式（Linear/Ease/Constant）に応じて、GLSL側の見た目に近いプレビューを描画する
           const updateRampBarGradient = () => {
             const sortedStops = [...node.stops].sort((a, b) => a.pos - b.pos);
-            const stopStrs = sortedStops.map(s => `${s.color} ${(s.pos * 100).toFixed(1)}%`);
+            const interp = node.controlsVal.interp || 'LINEAR';
+
+            if (sortedStops.length === 0) {
+              rampBar.style.background = '#000000';
+              return;
+            }
+            if (sortedStops.length === 1) {
+              rampBar.style.background = sortedStops[0].color;
+              return;
+            }
+
+            let stopStrs;
+
+            if (interp === 'CONSTANT') {
+              // 各ストップの色を、次のストップの直前まで一定に保つ（階段状）
+              stopStrs = [`${sortedStops[0].color} 0%`];
+              sortedStops.forEach((s, i) => {
+                const nextPos = i + 1 < sortedStops.length ? sortedStops[i + 1].pos : 1.0;
+                stopStrs.push(`${s.color} ${(s.pos * 100).toFixed(2)}%`);
+                stopStrs.push(`${s.color} ${(nextPos * 100).toFixed(2)}%`);
+              });
+            } else if (interp === 'EASE') {
+              // GLSL側と同じsmoothstepカーブに沿って中間色を細かくサンプリングする
+              stopStrs = [`${sortedStops[0].color} 0%`];
+              for (let i = 0; i < sortedStops.length - 1; i++) {
+                const a = sortedStops[i];
+                const b = sortedStops[i + 1];
+                const steps = 10;
+                for (let s = 1; s <= steps; s++) {
+                  const t = s / steps;
+                  const eased = t * t * (3.0 - 2.0 * t);
+                  const pos = a.pos + (b.pos - a.pos) * t;
+                  stopStrs.push(`${mixHexColor(a.color, b.color, eased)} ${(pos * 100).toFixed(2)}%`);
+                }
+              }
+            } else {
+              // LINEAR
+              stopStrs = sortedStops.map(s => `${s.color} ${(s.pos * 100).toFixed(2)}%`);
+            }
+
             rampBar.style.background = `linear-gradient(to right, ${stopStrs.join(', ')})`;
           };
           updateRampBarGradient();
@@ -1056,7 +1097,11 @@
 
               const beginStopDrag = (clientX) => {
                 node.activeStopIndex = idx;
-                renderStops();
+                // renderStops()はDOMを作り直してドラッグ中のstopEl自体を破棄してしまうため、
+                // 選択状態のクラス切り替えだけを行い、ドラッグ対象の要素は維持する
+                stopsContainer.querySelectorAll('.color-ramp-stop').forEach((el, i) => {
+                  el.classList.toggle('selected', i === idx);
+                });
                 updateColorInput();
 
                 const applyMove = (moveClientX) => {
@@ -2171,6 +2216,14 @@ float voronoi(vec2 st) {
     function hideError() {
       const banner = document.getElementById('errorBanner');
       banner.style.display = 'none';
+    }
+
+    // 2つの#RRGGBB色をtで線形補間する（Color RampのEaseプレビュー用）
+    function mixHexColor(hexA, hexB, t) {
+      const a = [1, 3, 5].map(i => parseInt(hexA.slice(i, i + 2), 16));
+      const b = [1, 3, 5].map(i => parseInt(hexB.slice(i, i + 2), 16));
+      const mixed = a.map((v, i) => Math.round(v + (b[i] - v) * t));
+      return `#${mixed.map(v => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('')}`;
     }
 
     function showToast(msg) {
