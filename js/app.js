@@ -1114,7 +1114,16 @@
                   this.updateGraph();
                 };
 
-                const onMove = (moveEvt) => applyMove(moveEvt.clientX);
+                const onMove = (moveEvt) => {
+                  // 何らかの理由でmouseupを取りこぼした場合（例:ドロップダウン操作でフォーカスが奪われた場合）、
+                  // ボタンが実際には離されていることを検知してドラッグを強制終了する。
+                  // これをしないと、ボタンを押していないのにつまみがカーソルに追従し続けてしまう。
+                  if (moveEvt.buttons === 0) {
+                    onUp();
+                    return;
+                  }
+                  applyMove(moveEvt.clientX);
+                };
                 const onUp = () => {
                   window.removeEventListener('mousemove', onMove);
                   window.removeEventListener('mouseup', onUp);
@@ -1426,6 +1435,14 @@
       }
 
       onMouseMove(e) {
+        // 実マウスイベントでボタンが離されているのにドラッグ系の状態が残っている場合
+        // （ネイティブのselectドロップダウン操作などでmouseupを取りこぼした場合）は強制終了する。
+        // タッチ由来の合成イベントには buttons が無いため、この判定はマウス操作時のみ働く。
+        if (e.buttons === 0 && (this.isPanning || this.isBoxSelecting || this.draggingNodes.length > 0 || this.connectingSocket)) {
+          this.onMouseUp(e);
+          return;
+        }
+
         if (this.isPanning) {
           this.panX = e.clientX - this.panStart.x;
           this.panY = e.clientY - this.panStart.y;
