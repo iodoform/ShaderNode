@@ -37,13 +37,16 @@
 
     /* ── ヘッダー ── */
     header {
-      height: 48px;
+      min-height: 48px;
+      flex-shrink: 0;
       background-color: #181818;
       border-bottom: 1px solid var(--border-color);
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
-      padding: 0 16px;
+      gap: 8px;
+      padding: 8px 16px;
       z-index: 100;
     }
 
@@ -54,6 +57,8 @@
       font-weight: 600;
       font-size: 16px;
       color: #ffffff;
+      flex-shrink: 0;
+      white-space: nowrap;
     }
 
     .logo-badge {
