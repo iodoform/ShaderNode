@@ -1787,62 +1787,43 @@
             if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
             else if (e.key === 'Escape') { e.preventDefault(); input.removeEventListener('blur', commit); cancel(); }
           });
-          input.addEventListener('mousedown', (e) => e.stopPropagation());
-          input.addEventListener('touchstart', (e) => e.stopPropagation());
+          input.addEventListener('pointerdown', (e) => e.stopPropagation());
         };
 
-        const beginDrag = (startClientX) => {
-          let hasDragged = false;
-          const startValue = currentValue;
+        // Pointer Events（マウス／タッチ／ペンを単一APIで扱える）＋ポインタキャプチャを使う。
+        // 個別にmouse/touchイベントを組み合わせるより、実機Safari含め挙動が安定する。
+        let dragState = null;
 
-          const applyDelta = (clientX) => {
-            const dx = clientX - startClientX;
-            if (Math.abs(dx) > 3) hasDragged = true;
-            currentValue = clamp(startValue + dx * step * 0.1);
-            setDisplay(currentValue);
-            onChange(currentValue);
-          };
-
-          const onMove = (e) => {
-            if (e.buttons === 0) { onUp(); return; } // mouseup取りこぼし対策
-            applyDelta(e.clientX);
-          };
-          const onUp = () => {
-            window.removeEventListener('mousemove', onMove);
-            window.removeEventListener('mouseup', onUp);
-            if (!hasDragged) enterEditMode();
-          };
-          window.addEventListener('mousemove', onMove);
-          window.addEventListener('mouseup', onUp);
-
-          const onTouchMove = (te) => {
-            if (te.touches.length !== 1) return;
-            te.preventDefault();
-            applyDelta(te.touches[0].clientX);
-          };
-          const onTouchEnd = () => {
-            window.removeEventListener('touchmove', onTouchMove);
-            window.removeEventListener('touchend', onTouchEnd);
-            window.removeEventListener('touchcancel', onTouchEnd);
-            if (!hasDragged) enterEditMode();
-          };
-          window.addEventListener('touchmove', onTouchMove, { passive: false });
-          window.addEventListener('touchend', onTouchEnd);
-          window.addEventListener('touchcancel', onTouchEnd);
-        };
-
-        el.addEventListener('mousedown', (e) => {
-          if (e.button !== 0) return;
-          if (Date.now() - this.lastTouchTs < 600) return; // 合成mousedownを無視
-          e.stopPropagation();
-          beginDrag(e.clientX);
-        });
-        el.addEventListener('touchstart', (e) => {
-          if (e.touches.length !== 1) return;
-          e.stopPropagation();
+        el.addEventListener('pointerdown', (e) => {
+          if (e.button !== undefined && e.button > 0) return; // 右クリック等は無視（touchはbutton=0で報告される）
           e.preventDefault();
-          beginDrag(e.touches[0].clientX);
-        }, { passive: false });
+          e.stopPropagation();
+          if (el.setPointerCapture) {
+            try { el.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
+          }
+          dragState = { pointerId: e.pointerId, startX: e.clientX, startValue: currentValue, hasDragged: false };
+        });
+
+        el.addEventListener('pointermove', (e) => {
+          if (!dragState || e.pointerId !== dragState.pointerId) return;
+          const dx = e.clientX - dragState.startX;
+          if (Math.abs(dx) > 3) dragState.hasDragged = true;
+          currentValue = clamp(dragState.startValue + dx * step * 0.1);
+          setDisplay(currentValue);
+          onChange(currentValue);
+        });
+
+        const endDrag = (e) => {
+          if (!dragState || (e.pointerId !== undefined && e.pointerId !== dragState.pointerId)) return;
+          const hadDragged = dragState.hasDragged;
+          if (el.releasePointerCapture) {
+            try { el.releasePointerCapture(dragState.pointerId); } catch (err) { /* noop */ }
+          }
+          dragState = null;
+          if (!hadDragged) enterEditMode();
+        };
+        el.addEventListener('pointerup', endDrag);
+        el.addEventListener('pointercancel', endDrag);
 
         return {
           el,
