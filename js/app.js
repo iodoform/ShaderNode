@@ -2755,6 +2755,7 @@ float voronoi(vec2 st) {
 
     let googleTokenClient = null;
     let googleAccessToken = null;
+    let googleTokenExpiresAt = 0; // ms（Date.now()基準）。アクセストークンは通常1時間ほどで失効する
     let googleDriveFolderId = null;
 
     function ensureGoogleTokenClient() {
@@ -2781,6 +2782,7 @@ float voronoi(vec2 st) {
           return;
         }
         googleAccessToken = resp.access_token;
+        googleTokenExpiresAt = Date.now() + (Number(resp.expires_in || 3600) * 1000);
         try {
           const profile = await driveApiFetchRaw('https://www.googleapis.com/oauth2/v3/userinfo').then(r => r.json());
           updateGoogleSignedInUI(profile);
@@ -2790,7 +2792,34 @@ float voronoi(vec2 st) {
           showToast('ログインしましたが、プロフィール情報の取得に失敗しました');
         }
       };
+      // 初回は同意画面を出す。以降の更新はensureFreshGoogleTokenがサイレントに行う
       googleTokenClient.requestAccessToken({ prompt: 'consent' });
+    }
+
+    // アクセストークンが失効間近／失効済みなら、ログイン済みユーザーに気づかれないよう
+    // バックグラウンドで裏取り直しする（多くの場合ポップアップ表示なしで完了する）。
+    // これにより「保存しようとしたら1時間で切れていて再ログインを要求される」ことを防ぐ。
+    function ensureFreshGoogleToken() {
+      const hasMargin = googleAccessToken && Date.now() < googleTokenExpiresAt - 60000;
+      if (hasMargin) return Promise.resolve(true);
+
+      const client = ensureGoogleTokenClient();
+      if (!client) return Promise.resolve(false);
+
+      return new Promise((resolve) => {
+        client.callback = (resp) => {
+          if (resp.error) {
+            // サイレント更新に失敗＝セッションが完全に切れている。手動での再ログインが必要
+            resolve(false);
+            return;
+          }
+          googleAccessToken = resp.access_token;
+          googleTokenExpiresAt = Date.now() + (Number(resp.expires_in || 3600) * 1000);
+          resolve(true);
+        };
+        // prompt:'' はユーザーのGoogleセッションが有効な限り、ポップアップやUIを出さずに更新を試みる
+        client.requestAccessToken({ prompt: '' });
+      });
     }
 
     function handleGoogleLogout() {
@@ -2798,6 +2827,7 @@ float voronoi(vec2 st) {
         google.accounts.oauth2.revoke(googleAccessToken, () => {});
       }
       googleAccessToken = null;
+      googleTokenExpiresAt = 0;
       googleDriveFolderId = null;
       document.getElementById('googleSignedOut').style.display = '';
       document.getElementById('googleSignedIn').style.display = 'none';
@@ -2867,6 +2897,12 @@ float voronoi(vec2 st) {
       const filename = window.prompt('保存するファイル名を入力してください:', defaultName);
       if (!filename) return;
 
+      if (!(await ensureFreshGoogleToken())) {
+        showToast('ログインの有効期限が切れました。もう一度Googleでログインしてください');
+        handleGoogleLogout();
+        return;
+      }
+
       try {
         showToast('Googleドライブに保存しています...');
         const folderId = await driveFindOrCreateFolder();
@@ -2903,6 +2939,12 @@ float voronoi(vec2 st) {
       const listEl = document.getElementById('driveFileList');
       listEl.innerHTML = '<div style="color: #888; font-size: 12px;">読み込み中...</div>';
       modal.classList.add('active');
+
+      if (!(await ensureFreshGoogleToken())) {
+        listEl.innerHTML = '<div style="color: #ff8a80; font-size: 12px;">ログインの有効期限が切れました。一度ログアウトしてから再度ログインしてください</div>';
+        handleGoogleLogout();
+        return;
+      }
 
       try {
         const folderId = await driveFindOrCreateFolder();
@@ -2947,6 +2989,12 @@ float voronoi(vec2 st) {
     }
 
     async function driveLoadFile(fileId, fileName) {
+      if (!(await ensureFreshGoogleToken())) {
+        showToast('ログインの有効期限が切れました。もう一度Googleでログインしてください');
+        handleGoogleLogout();
+        return;
+      }
+
       try {
         const data = await driveApiFetchRaw(
           `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`
