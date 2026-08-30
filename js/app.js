@@ -2766,28 +2766,15 @@ float voronoi(vec2 st) {
     // 最小権限のスコープ（ユーザーのDrive内の他のファイルは一切見えない）。
     const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile';
     const GOOGLE_DRIVE_FOLDER_NAME = 'ShaderNode Studio Projects';
-    const GOOGLE_CLIENT_ID_STORAGE_KEY = 'shaderNode.googleOAuthClientId';
+
+    // Google Cloud ConsoleでこのGitHub Pagesの生成元向けに発行したOAuthクライアントID。
+    // クライアントIDは秘密情報ではない（承認済みJavaScript生成元でアクセス元を制限しているため
+    // 公開リポジトリに含めて問題ない）ので、直接埋め込んでいる。
+    const GOOGLE_OAUTH_CLIENT_ID = '943232530252-fm6csvmjm62b8a89nhqsel5bp8g2o65e.apps.googleusercontent.com';
 
     let googleTokenClient = null;
     let googleAccessToken = null;
     let googleDriveFolderId = null;
-
-    function getGoogleClientId() {
-      let clientId = localStorage.getItem(GOOGLE_CLIENT_ID_STORAGE_KEY);
-      if (!clientId) {
-        clientId = window.prompt(
-          'Googleログイン機能を使うには、あなた自身のGoogle Cloud OAuthクライアントIDが必要です。\n' +
-          '（Google Cloud Console でOAuthクライアントID「ウェブアプリケーション」を作成し、\n' +
-          '  承認済みJavaScript生成元にこのサイトのURLを追加してください）\n\n' +
-          'クライアントIDを入力してください（このブラウザにのみ保存されます）:'
-        );
-        if (clientId) {
-          clientId = clientId.trim();
-          localStorage.setItem(GOOGLE_CLIENT_ID_STORAGE_KEY, clientId);
-        }
-      }
-      return clientId;
-    }
 
     function ensureGoogleTokenClient() {
       if (googleTokenClient) return googleTokenClient;
@@ -2795,13 +2782,10 @@ float voronoi(vec2 st) {
         showToast('Google Identity Servicesの読み込みに失敗しました。通信環境を確認してください。');
         return null;
       }
-      const clientId = getGoogleClientId();
-      if (!clientId) return null;
-
       googleTokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: clientId,
+        client_id: GOOGLE_OAUTH_CLIENT_ID,
         scope: GOOGLE_DRIVE_SCOPE,
-        callback: '' // 呼び出し時に都度differredで上書きする
+        callback: '' // 呼び出し時に都度差し替える
       });
       return googleTokenClient;
     }
