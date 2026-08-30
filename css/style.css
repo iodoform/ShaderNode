@@ -73,6 +73,42 @@
       flex-wrap: wrap;
     }
 
+    .toolbar-divider {
+      width: 1px;
+      height: 20px;
+      background-color: #444;
+    }
+
+    #googleSignedIn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .drive-file-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      background-color: #222;
+      border: 1px solid #383838;
+      border-radius: 4px;
+      padding: 8px 12px;
+    }
+
+    .drive-file-name {
+      font-size: 13px;
+      color: #eee;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .drive-file-date {
+      font-size: 11px;
+      color: #888;
+    }
+
     .btn {
       background-color: #383838;
       color: var(--text-main);
@@ -422,6 +458,20 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      cursor: text;
+    }
+
+    .node-title-input {
+      flex: 1;
+      min-width: 0;
+      background-color: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      border-radius: 3px;
+      color: #fff;
+      font: inherit;
+      font-weight: 600;
+      padding: 0 4px;
+      outline: none;
     }
 
     .node-close {
@@ -460,6 +510,26 @@
       align-items: center;
       gap: 6px;
       height: 18px;
+    }
+
+    /* 未接続で手動入力可能なソケット（ピン+ラベルの行の下に入力欄を表示） */
+    .socket-row-editable {
+      flex-direction: column;
+      align-items: stretch;
+      height: auto;
+      gap: 4px;
+    }
+
+    .socket-row-top {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 18px;
+    }
+
+    .socket-input-field {
+      margin-left: 18px;
+      width: calc(100% - 18px);
     }
 
     .socket-pin {
@@ -524,6 +594,44 @@
 
     .node-input-text:focus, .node-select:focus {
       border-color: var(--accent-blue);
+    }
+
+    /* Blender風のドラッグ数値スライダー */
+    .drag-number {
+      background-color: #1a1a1a;
+      border: 1px solid #444;
+      border-radius: 3px;
+      padding: 4px 6px;
+      font-size: 11px;
+      width: 100%;
+      box-sizing: border-box;
+      cursor: ew-resize;
+      user-select: none;
+      touch-action: none;
+      display: flex;
+      justify-content: center;
+      transition: border-color 0.15s, background-color 0.15s;
+    }
+
+    .drag-number:hover {
+      border-color: var(--accent-blue);
+      background-color: #222;
+    }
+
+    .drag-number-value {
+      color: #fff;
+      pointer-events: none;
+    }
+
+    .drag-number-input {
+      background: transparent;
+      border: none;
+      color: #fff;
+      font: inherit;
+      text-align: center;
+      width: 100%;
+      outline: none;
+      padding: 0;
     }
 
     .node-input-color {

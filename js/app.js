@@ -765,10 +765,17 @@
       deleteSelectedNodes() {
         const toDelete = Array.from(this.selectedNodeIds);
         let deletedCount = 0;
+        const survivorsToRefresh = new Set();
 
         toDelete.forEach(nodeId => {
           const node = this.nodes.find(n => n.id === nodeId);
           if (node && !NODE_DEFINITIONS[node.type].isOutputNode) {
+            this.connections.forEach(c => {
+              // 削除されるノードに繋がっていた相手側は手動入力欄が復活するため再描画対象にする
+              if (c.fromNode === nodeId && !toDelete.includes(c.toNode)) survivorsToRefresh.add(c.toNode);
+              if (c.toNode === nodeId && !toDelete.includes(c.fromNode)) survivorsToRefresh.add(c.fromNode);
+            });
+
             this.connections = this.connections.filter(
               c => !(c.fromNode === nodeId || c.toNode === nodeId)
             );
@@ -780,6 +787,11 @@
             this.selectedNodeIds.delete(nodeId);
             deletedCount++;
           }
+        });
+
+        survivorsToRefresh.forEach(id => {
+          const n = this.nodes.find(x => x.id === id);
+          if (n) this.renderNode(n);
         });
 
         if (deletedCount > 0) {
@@ -915,6 +927,13 @@
           return;
         }
 
+        // 削除されるノードに繋がっていた相手側は手動入力欄が復活するため再描画対象にする
+        const survivorsToRefresh = new Set();
+        this.connections.forEach(c => {
+          if (c.fromNode === nodeId) survivorsToRefresh.add(c.toNode);
+          if (c.toNode === nodeId) survivorsToRefresh.add(c.fromNode);
+        });
+
         this.connections = this.connections.filter(
           c => !(c.fromNode === nodeId || c.toNode === nodeId)
         );
@@ -924,6 +943,11 @@
         const el = document.getElementById(nodeId);
         if (el) el.remove();
         compiler.removeViewerRenderer(nodeId);
+
+        survivorsToRefresh.forEach(id => {
+          const n = this.nodes.find(x => x.id === id);
+          if (n) this.renderNode(n);
+        });
 
         this.updateGraph();
       }
@@ -937,6 +961,7 @@
         const def = NODE_DEFINITIONS[node.type];
         const nodeEl = document.createElement('div');
         nodeEl.className = 'node';
+        if (this.selectedNodeIds.has(node.id)) nodeEl.classList.add('selected');
         nodeEl.id = node.id;
         nodeEl.style.transform = `translate(${node.x}px, ${node.y}px)`;
 
@@ -947,7 +972,43 @@
         const titleSpan = document.createElement('span');
         titleSpan.className = 'node-title';
         titleSpan.textContent = node.title;
+        titleSpan.title = 'ダブルクリックで名前を変更';
         headerEl.appendChild(titleSpan);
+
+        // ノード名のリネーム（インスタンス単位。node.titleは各ノードが個別に持つ値なので、
+        // 同じ種類の他のノードの表示名には影響しない）
+        const beginTitleEdit = () => {
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.className = 'node-title-input';
+          input.value = node.title;
+          titleSpan.replaceWith(input);
+          input.focus();
+          input.select();
+
+          const commit = () => {
+            const newTitle = input.value.trim();
+            node.title = newTitle || node.title;
+            titleSpan.textContent = node.title;
+            input.replaceWith(titleSpan);
+          };
+          const cancel = () => {
+            input.replaceWith(titleSpan);
+          };
+
+          input.addEventListener('blur', commit);
+          input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+            else if (e.key === 'Escape') { e.preventDefault(); input.removeEventListener('blur', commit); cancel(); }
+          });
+          input.addEventListener('mousedown', (e) => e.stopPropagation());
+          input.addEventListener('touchstart', (e) => e.stopPropagation());
+        };
+
+        titleSpan.addEventListener('dblclick', (e) => {
+          e.stopPropagation();
+          beginTitleEdit();
+        });
 
         if (!def.isOutputNode) {
           const closeSpan = document.createElement('span');
@@ -1277,17 +1338,15 @@
               });
               ctrlContainer.appendChild(select);
             } else if (ctrl.type === 'number') {
-              const input = document.createElement('input');
-              input.type = 'number';
-              input.className = 'node-input-text';
-              input.value = node.controlsVal[ctrl.id];
-              input.step = ctrl.step || 'any';
-              input.addEventListener('input', (e) => {
-                const val = parseFloat(e.target.value);
-                node.controlsVal[ctrl.id] = isNaN(val) ? 0 : val;
-                this.updateGraph();
+              const field = this.createDragNumberField({
+                value: node.controlsVal[ctrl.id],
+                step: ctrl.step || 0.1,
+                onChange: (v) => {
+                  node.controlsVal[ctrl.id] = v;
+                  this.updateGraph();
+                }
               });
-              ctrlContainer.appendChild(input);
+              ctrlContainer.appendChild(field.el);
             } else if (ctrl.type === 'color') {
               const input = document.createElement('input');
               input.type = 'color';
@@ -1359,12 +1418,65 @@
           pin.style.borderColor = this.getSocketColor(inp.type);
           bindSocketEvents(pin, inp.id, false, inp.type);
 
-          const label = document.createElement('span');
-          label.className = 'socket-label';
-          label.textContent = inp.label;
+          const isConnected = this.connections.some(c => c.toNode === node.id && c.toSocket === inp.id);
 
-          row.appendChild(pin);
-          row.appendChild(label);
+          // 未接続の数値/ベクトル入力は、Blenderのようにソケット上で直接値を編集できるようにする
+          if (!isConnected && inp.type === 'float' && typeof inp.default === 'number') {
+            row.classList.add('socket-row-editable');
+            const label = document.createElement('span');
+            label.className = 'socket-label socket-label-editable';
+            label.textContent = inp.label;
+
+            const topRow = document.createElement('div');
+            topRow.className = 'socket-row-top';
+            topRow.appendChild(pin);
+            topRow.appendChild(label);
+
+            const field = this.createDragNumberField({
+              value: (node.inputsVal[inp.id] !== undefined) ? node.inputsVal[inp.id] : inp.default,
+              step: 0.1,
+              onChange: (v) => {
+                node.inputsVal[inp.id] = v;
+                this.updateGraph();
+              }
+            });
+            field.el.classList.add('socket-input-field');
+
+            row.appendChild(topRow);
+            row.appendChild(field.el);
+          } else if (!isConnected && inp.type === 'vec3') {
+            row.classList.add('socket-row-editable');
+            const label = document.createElement('span');
+            label.className = 'socket-label socket-label-editable';
+            label.textContent = inp.label;
+
+            const topRow = document.createElement('div');
+            topRow.className = 'socket-row-top';
+            topRow.appendChild(pin);
+            topRow.appendChild(label);
+
+            const colorInput = document.createElement('input');
+            colorInput.type = 'color';
+            colorInput.className = 'node-input-color socket-input-field';
+            colorInput.value = node.inputsVal[inp.id] || glslVec3ToHex(inp.default || 'vec3(0.0)');
+            colorInput.addEventListener('input', (e) => {
+              node.inputsVal[inp.id] = e.target.value;
+              this.updateGraph();
+            });
+            colorInput.addEventListener('mousedown', (e) => e.stopPropagation());
+            colorInput.addEventListener('touchstart', (e) => e.stopPropagation());
+
+            row.appendChild(topRow);
+            row.appendChild(colorInput);
+          } else {
+            const label = document.createElement('span');
+            label.className = 'socket-label';
+            label.textContent = inp.label;
+
+            row.appendChild(pin);
+            row.appendChild(label);
+          }
+
           inputsCol.appendChild(row);
         });
 
@@ -1496,6 +1608,9 @@
         }
 
         if (this.connectingSocket) {
+          // 接続の有無でソケットの手動入力欄の表示が変わるため、関わったノードは再描画する
+          const affectedNodeIds = new Set([this.connectingSocket.nodeId]);
+
           const target = document.elementFromPoint(e.clientX, e.clientY);
           if (target && target.classList.contains('socket-pin')) {
             const targetNodeId = target.dataset.nodeId;
@@ -1521,9 +1636,16 @@
                 toSocket: to.socketId
               });
 
+              affectedNodeIds.add(to.nodeId);
               this.updateGraph();
             }
           }
+
+          affectedNodeIds.forEach(id => {
+            const n = this.nodes.find(x => x.id === id);
+            if (n) this.renderNode(n);
+          });
+          this.updateWires();
 
           this.connectingSocket = null;
           this.updateWires();
@@ -1574,7 +1696,15 @@
       }
 
       removeConnection(connId) {
+        const conn = this.connections.find(c => c.id === connId);
         this.connections = this.connections.filter(c => c.id !== connId);
+
+        // 切断された入力側ノードは手動入力欄が復活するため再描画する
+        if (conn) {
+          const toNode = this.nodes.find(n => n.id === conn.toNode);
+          if (toNode) this.renderNode(toNode);
+        }
+
         this.updateGraph();
       }
 
@@ -1583,11 +1713,141 @@
       pruneInvalidConnections(node) {
         const validInputIds = new Set(getEffectiveInputs(node).map(i => i.id));
         const validOutputIds = new Set(getEffectiveOutputs(node).map(o => o.id));
+
+        // このノードの出力側の接続が失われる場合、相手（入力側）は手動入力欄が復活するため再描画する
+        const survivorsToRefresh = new Set();
+        this.connections.forEach(c => {
+          if (c.fromNode === node.id && !validOutputIds.has(c.fromSocket)) {
+            survivorsToRefresh.add(c.toNode);
+          }
+        });
+
         this.connections = this.connections.filter(c => {
           if (c.toNode === node.id && !validInputIds.has(c.toSocket)) return false;
           if (c.fromNode === node.id && !validOutputIds.has(c.fromSocket)) return false;
           return true;
         });
+
+        survivorsToRefresh.forEach(id => {
+          if (id === node.id) return; // 自分自身はこの後の呼び出し元で再描画される
+          const n = this.nodes.find(x => x.id === id);
+          if (n) this.renderNode(n);
+        });
+      }
+
+      // Blender風の数値入力ウィジェット: クリック(ドラッグなし)でテキスト入力、
+      // 左右にドラッグ/スワイプすると数値を増減できる。ネイティブのスピンボタンより操作しやすい。
+      createDragNumberField({ value, step = 0.1, precision = 2, min = null, max = null, onChange }) {
+        let currentValue = value;
+
+        const el = document.createElement('div');
+        el.className = 'drag-number';
+
+        const valueSpan = document.createElement('span');
+        valueSpan.className = 'drag-number-value';
+        el.appendChild(valueSpan);
+
+        const clamp = (v) => {
+          if (min !== null) v = Math.max(min, v);
+          if (max !== null) v = Math.min(max, v);
+          return v;
+        };
+
+        const setDisplay = (v) => {
+          valueSpan.textContent = Number(v).toFixed(precision);
+        };
+        setDisplay(currentValue);
+
+        const enterEditMode = () => {
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.inputMode = 'decimal';
+          input.className = 'drag-number-input';
+          input.value = currentValue;
+
+          el.replaceChild(input, valueSpan);
+          input.focus();
+          input.select();
+
+          const commit = () => {
+            const parsed = parseFloat(input.value);
+            if (!isNaN(parsed)) {
+              currentValue = clamp(parsed);
+              onChange(currentValue);
+            }
+            setDisplay(currentValue);
+            el.replaceChild(valueSpan, input);
+          };
+          const cancel = () => {
+            el.replaceChild(valueSpan, input);
+          };
+
+          input.addEventListener('blur', commit);
+          input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+            else if (e.key === 'Escape') { e.preventDefault(); input.removeEventListener('blur', commit); cancel(); }
+          });
+          input.addEventListener('mousedown', (e) => e.stopPropagation());
+          input.addEventListener('touchstart', (e) => e.stopPropagation());
+        };
+
+        const beginDrag = (startClientX) => {
+          let hasDragged = false;
+          const startValue = currentValue;
+
+          const applyDelta = (clientX) => {
+            const dx = clientX - startClientX;
+            if (Math.abs(dx) > 3) hasDragged = true;
+            currentValue = clamp(startValue + dx * step * 0.1);
+            setDisplay(currentValue);
+            onChange(currentValue);
+          };
+
+          const onMove = (e) => {
+            if (e.buttons === 0) { onUp(); return; } // mouseup取りこぼし対策
+            applyDelta(e.clientX);
+          };
+          const onUp = () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            if (!hasDragged) enterEditMode();
+          };
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+
+          const onTouchMove = (te) => {
+            if (te.touches.length !== 1) return;
+            te.preventDefault();
+            applyDelta(te.touches[0].clientX);
+          };
+          const onTouchEnd = () => {
+            window.removeEventListener('touchmove', onTouchMove);
+            window.removeEventListener('touchend', onTouchEnd);
+            window.removeEventListener('touchcancel', onTouchEnd);
+            if (!hasDragged) enterEditMode();
+          };
+          window.addEventListener('touchmove', onTouchMove, { passive: false });
+          window.addEventListener('touchend', onTouchEnd);
+          window.addEventListener('touchcancel', onTouchEnd);
+        };
+
+        el.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          if (Date.now() - this.lastTouchTs < 600) return; // 合成mousedownを無視
+          e.stopPropagation();
+          beginDrag(e.clientX);
+        });
+        el.addEventListener('touchstart', (e) => {
+          if (e.touches.length !== 1) return;
+          e.stopPropagation();
+          e.preventDefault();
+          beginDrag(e.touches[0].clientX);
+        }, { passive: false });
+
+        return {
+          el,
+          setValue: (v) => { currentValue = v; setDisplay(v); }
+        };
       }
 
       createBezierPath(x1, y1, x2, y2) {
@@ -1762,6 +2022,13 @@ float voronoi(vec2 st) {
                 }
               }
               return varName;
+            }
+
+            // 未接続の場合、ノード上で手動入力された値があればそれを優先する
+            const manualVal = node.inputsVal ? node.inputsVal[inputId] : undefined;
+            if (manualVal !== undefined) {
+              if (targetType === 'vec3' && typeof manualVal === 'string') return hexToGlslVec3(manualVal);
+              if (targetType === 'float' && typeof manualVal === 'number') return manualVal.toFixed(4);
             }
             return defaultVal;
           };
@@ -2243,6 +2510,27 @@ float voronoi(vec2 st) {
       return `#${mixed.map(v => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('')}`;
     }
 
+    // 'vec3(0.0)' や 'vec3(1.0, 0.5, 0.2)' のようなGLSLリテラルを#RRGGBBに変換する
+    // （未接続のベクトル入力ソケットの初期値を色ピッカーに表示するため）
+    function glslVec3ToHex(glslStr) {
+      const m = /vec3\(([^)]*)\)/.exec(glslStr || '');
+      if (!m) return '#000000';
+      const parts = m[1].split(',').map(s => parseFloat(s.trim()));
+      const r = isNaN(parts[0]) ? 0 : parts[0];
+      const g = parts.length > 1 && !isNaN(parts[1]) ? parts[1] : r;
+      const b = parts.length > 2 && !isNaN(parts[2]) ? parts[2] : r;
+      const toHex = v => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0');
+      return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+    }
+
+    // #RRGGBB を GLSLのvec3(r, g, b)リテラルに変換する
+    function hexToGlslVec3(hex) {
+      const r = (parseInt(hex.slice(1, 3), 16) / 255).toFixed(3);
+      const g = (parseInt(hex.slice(3, 5), 16) / 255).toFixed(3);
+      const b = (parseInt(hex.slice(5, 7), 16) / 255).toFixed(3);
+      return `vec3(${r}, ${g}, ${b})`;
+    }
+
     function showToast(msg) {
       const toast = document.getElementById('toastMsg');
       toast.textContent = msg;
@@ -2294,9 +2582,9 @@ float voronoi(vec2 st) {
       });
     }
 
-    // ── ノードグラフのJSON書き出し／読み込み ──
-    function exportGraphJSON() {
-      const data = {
+    // ── ノードグラフのJSON書き出し／読み込み（ファイル・Googleドライブ共通） ──
+    function buildGraphExportData() {
+      return {
         version: 1,
         nextId: graph.nextId,
         nodes: graph.nodes.map(n => {
@@ -2314,7 +2602,10 @@ float voronoi(vec2 st) {
           id: c.id, fromNode: c.fromNode, fromSocket: c.fromSocket, toNode: c.toNode, toSocket: c.toSocket
         }))
       };
+    }
 
+    function exportGraphJSON() {
+      const data = buildGraphExportData();
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -2327,59 +2618,63 @@ float voronoi(vec2 st) {
       showToast('ノードグラフをJSONとしてダウンロードしました');
     }
 
+    // パース済みのグラフJSONを現在のグラフに適用する（ファイル読み込み・Driveからの読み込み共通処理）
+    function applyGraphJSON(data) {
+      if (!data || !Array.isArray(data.nodes) || !Array.isArray(data.connections)) {
+        throw new Error('不正なファイル形式です');
+      }
+
+      graph.clear();
+
+      data.nodes.forEach(n => {
+        if (!n || !NODE_DEFINITIONS[n.type]) return;
+        const node = {
+          id: n.id,
+          type: n.type,
+          title: n.title || NODE_DEFINITIONS[n.type].title,
+          x: typeof n.x === 'number' ? n.x : 0,
+          y: typeof n.y === 'number' ? n.y : 0,
+          controlsVal: n.controlsVal || {},
+          inputsVal: n.inputsVal || {}
+        };
+        if (n.stops) {
+          node.stops = n.stops;
+          node.activeStopIndex = n.activeStopIndex || 0;
+        }
+        graph.nodes.push(node);
+      });
+
+      const validNodeIds = new Set(graph.nodes.map(n => n.id));
+      graph.connections = data.connections.filter(c =>
+        c && validNodeIds.has(c.fromNode) && validNodeIds.has(c.toNode)
+      );
+
+      let maxIdNum = 0;
+      graph.nodes.forEach(n => {
+        const match = /^node_(\d+)$/.exec(n.id);
+        if (match) maxIdNum = Math.max(maxIdNum, parseInt(match[1], 10));
+      });
+      graph.nextId = typeof data.nextId === 'number' ? Math.max(data.nextId, maxIdNum + 1) : maxIdNum + 1;
+
+      if (!graph.nodes.some(n => NODE_DEFINITIONS[n.type] && NODE_DEFINITIONS[n.type].isOutputNode)) {
+        graph.nodes.push({
+          id: `node_${graph.nextId++}`,
+          type: 'output',
+          title: NODE_DEFINITIONS.output.title,
+          x: 300, y: 150,
+          controlsVal: {}, inputsVal: {}
+        });
+      }
+
+      graph.nodes.forEach(n => graph.renderNode(n));
+      graph.updateGraph();
+    }
+
     function importGraphJSON(file) {
       const reader = new FileReader();
       reader.onload = (e) => {
         try {
-          const data = JSON.parse(e.target.result);
-          if (!data || !Array.isArray(data.nodes) || !Array.isArray(data.connections)) {
-            throw new Error('不正なファイル形式です');
-          }
-
-          graph.clear();
-
-          data.nodes.forEach(n => {
-            if (!n || !NODE_DEFINITIONS[n.type]) return;
-            const node = {
-              id: n.id,
-              type: n.type,
-              title: n.title || NODE_DEFINITIONS[n.type].title,
-              x: typeof n.x === 'number' ? n.x : 0,
-              y: typeof n.y === 'number' ? n.y : 0,
-              controlsVal: n.controlsVal || {},
-              inputsVal: n.inputsVal || {}
-            };
-            if (n.stops) {
-              node.stops = n.stops;
-              node.activeStopIndex = n.activeStopIndex || 0;
-            }
-            graph.nodes.push(node);
-          });
-
-          const validNodeIds = new Set(graph.nodes.map(n => n.id));
-          graph.connections = data.connections.filter(c =>
-            c && validNodeIds.has(c.fromNode) && validNodeIds.has(c.toNode)
-          );
-
-          let maxIdNum = 0;
-          graph.nodes.forEach(n => {
-            const match = /^node_(\d+)$/.exec(n.id);
-            if (match) maxIdNum = Math.max(maxIdNum, parseInt(match[1], 10));
-          });
-          graph.nextId = typeof data.nextId === 'number' ? Math.max(data.nextId, maxIdNum + 1) : maxIdNum + 1;
-
-          if (!graph.nodes.some(n => NODE_DEFINITIONS[n.type] && NODE_DEFINITIONS[n.type].isOutputNode)) {
-            graph.nodes.push({
-              id: `node_${graph.nextId++}`,
-              type: 'output',
-              title: NODE_DEFINITIONS.output.title,
-              x: 300, y: 150,
-              controlsVal: {}, inputsVal: {}
-            });
-          }
-
-          graph.nodes.forEach(n => graph.renderNode(n));
-          graph.updateGraph();
+          applyGraphJSON(JSON.parse(e.target.result));
           showToast('JSONからノードグラフを読み込みました');
         } catch (err) {
           showToast('読み込みに失敗しました: ' + err.message);
@@ -2466,6 +2761,256 @@ float voronoi(vec2 st) {
       graph.updateGraph();
     }
 
+    // ── Googleログイン & Googleドライブ連携 ──
+    // 「drive.file」スコープは、このアプリ自身が作成したファイル／フォルダにのみアクセスできる
+    // 最小権限のスコープ（ユーザーのDrive内の他のファイルは一切見えない）。
+    const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile';
+    const GOOGLE_DRIVE_FOLDER_NAME = 'ShaderNode Studio Projects';
+    const GOOGLE_CLIENT_ID_STORAGE_KEY = 'shaderNode.googleOAuthClientId';
+
+    let googleTokenClient = null;
+    let googleAccessToken = null;
+    let googleDriveFolderId = null;
+
+    function getGoogleClientId() {
+      let clientId = localStorage.getItem(GOOGLE_CLIENT_ID_STORAGE_KEY);
+      if (!clientId) {
+        clientId = window.prompt(
+          'Googleログイン機能を使うには、あなた自身のGoogle Cloud OAuthクライアントIDが必要です。\n' +
+          '（Google Cloud Console でOAuthクライアントID「ウェブアプリケーション」を作成し、\n' +
+          '  承認済みJavaScript生成元にこのサイトのURLを追加してください）\n\n' +
+          'クライアントIDを入力してください（このブラウザにのみ保存されます）:'
+        );
+        if (clientId) {
+          clientId = clientId.trim();
+          localStorage.setItem(GOOGLE_CLIENT_ID_STORAGE_KEY, clientId);
+        }
+      }
+      return clientId;
+    }
+
+    function ensureGoogleTokenClient() {
+      if (googleTokenClient) return googleTokenClient;
+      if (!window.google || !window.google.accounts || !window.google.accounts.oauth2) {
+        showToast('Google Identity Servicesの読み込みに失敗しました。通信環境を確認してください。');
+        return null;
+      }
+      const clientId = getGoogleClientId();
+      if (!clientId) return null;
+
+      googleTokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: GOOGLE_DRIVE_SCOPE,
+        callback: '' // 呼び出し時に都度differredで上書きする
+      });
+      return googleTokenClient;
+    }
+
+    function handleGoogleLogin() {
+      const client = ensureGoogleTokenClient();
+      if (!client) return;
+
+      client.callback = async (resp) => {
+        if (resp.error) {
+          showToast('Googleログインに失敗しました: ' + resp.error);
+          return;
+        }
+        googleAccessToken = resp.access_token;
+        try {
+          const profile = await driveApiFetchRaw('https://www.googleapis.com/oauth2/v3/userinfo').then(r => r.json());
+          updateGoogleSignedInUI(profile);
+          showToast(`${profile.name || 'Google'} としてログインしました`);
+        } catch (err) {
+          updateGoogleSignedInUI(null);
+          showToast('ログインしましたが、プロフィール情報の取得に失敗しました');
+        }
+      };
+      googleTokenClient.requestAccessToken({ prompt: 'consent' });
+    }
+
+    function handleGoogleLogout() {
+      if (googleAccessToken && window.google && google.accounts.oauth2.revoke) {
+        google.accounts.oauth2.revoke(googleAccessToken, () => {});
+      }
+      googleAccessToken = null;
+      googleDriveFolderId = null;
+      document.getElementById('googleSignedOut').style.display = '';
+      document.getElementById('googleSignedIn').style.display = 'none';
+      showToast('ログアウトしました');
+    }
+
+    function updateGoogleSignedInUI(profile) {
+      document.getElementById('googleSignedOut').style.display = 'none';
+      document.getElementById('googleSignedIn').style.display = 'flex';
+      if (profile) {
+        document.getElementById('googleUserName').textContent = profile.name || '';
+        const avatar = document.getElementById('googleUserAvatar');
+        if (profile.picture) {
+          avatar.src = profile.picture;
+          avatar.style.display = '';
+        } else {
+          avatar.style.display = 'none';
+        }
+      }
+    }
+
+    async function driveApiFetchRaw(url, options = {}) {
+      const res = await fetch(url, {
+        ...options,
+        headers: {
+          ...(options.headers || {}),
+          Authorization: `Bearer ${googleAccessToken}`
+        }
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`Drive API error (${res.status}): ${text}`);
+      }
+      return res;
+    }
+
+    async function driveFindOrCreateFolder() {
+      if (googleDriveFolderId) return googleDriveFolderId;
+
+      const q = encodeURIComponent(
+        `name = '${GOOGLE_DRIVE_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`
+      );
+      const searchRes = await driveApiFetchRaw(
+        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`
+      ).then(r => r.json());
+
+      if (searchRes.files && searchRes.files.length > 0) {
+        googleDriveFolderId = searchRes.files[0].id;
+        return googleDriveFolderId;
+      }
+
+      const createRes = await driveApiFetchRaw('https://www.googleapis.com/drive/v3/files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: GOOGLE_DRIVE_FOLDER_NAME,
+          mimeType: 'application/vnd.google-apps.folder'
+        })
+      }).then(r => r.json());
+
+      googleDriveFolderId = createRes.id;
+      return googleDriveFolderId;
+    }
+
+    async function driveSaveCurrentGraph() {
+      const defaultName = `shader-node-graph-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+      const filename = window.prompt('保存するファイル名を入力してください:', defaultName);
+      if (!filename) return;
+
+      try {
+        showToast('Googleドライブに保存しています...');
+        const folderId = await driveFindOrCreateFolder();
+        const data = buildGraphExportData();
+
+        const metadata = { name: filename, parents: [folderId], mimeType: 'application/json' };
+        const boundary = 'shadernode_boundary_' + Date.now();
+        const body =
+          `--${boundary}\r\n` +
+          `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+          `${JSON.stringify(metadata)}\r\n` +
+          `--${boundary}\r\n` +
+          `Content-Type: application/json\r\n\r\n` +
+          `${JSON.stringify(data, null, 2)}\r\n` +
+          `--${boundary}--`;
+
+        await driveApiFetchRaw(
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+            body
+          }
+        );
+
+        showToast(`「${filename}」をGoogleドライブに保存しました`);
+      } catch (err) {
+        showToast('保存に失敗しました: ' + err.message);
+      }
+    }
+
+    async function driveOpenLoadModal() {
+      const modal = document.getElementById('driveModal');
+      const listEl = document.getElementById('driveFileList');
+      listEl.innerHTML = '<div style="color: #888; font-size: 12px;">読み込み中...</div>';
+      modal.classList.add('active');
+
+      try {
+        const folderId = await driveFindOrCreateFolder();
+        const q = encodeURIComponent(`'${folderId}' in parents and trashed = false`);
+        const res = await driveApiFetchRaw(
+          `https://www.googleapis.com/drive/v3/files?q=${q}&orderBy=modifiedTime desc&fields=files(id,name,modifiedTime)`
+        ).then(r => r.json());
+
+        const files = res.files || [];
+        if (files.length === 0) {
+          listEl.innerHTML = '<div style="color: #888; font-size: 12px;">保存されたファイルはまだありません</div>';
+          return;
+        }
+
+        listEl.innerHTML = '';
+        files.forEach(file => {
+          const item = document.createElement('div');
+          item.className = 'drive-file-item';
+
+          const info = document.createElement('div');
+          const nameEl = document.createElement('div');
+          nameEl.className = 'drive-file-name';
+          nameEl.textContent = file.name;
+          const dateEl = document.createElement('div');
+          dateEl.className = 'drive-file-date';
+          dateEl.textContent = new Date(file.modifiedTime).toLocaleString('ja-JP');
+          info.appendChild(nameEl);
+          info.appendChild(dateEl);
+
+          const loadBtn = document.createElement('button');
+          loadBtn.className = 'btn';
+          loadBtn.textContent = '読み込む';
+          loadBtn.addEventListener('click', () => driveLoadFile(file.id, file.name));
+
+          item.appendChild(info);
+          item.appendChild(loadBtn);
+          listEl.appendChild(item);
+        });
+      } catch (err) {
+        listEl.innerHTML = `<div style="color: #ff8a80; font-size: 12px;">読み込み一覧の取得に失敗しました: ${err.message}</div>`;
+      }
+    }
+
+    async function driveLoadFile(fileId, fileName) {
+      try {
+        const data = await driveApiFetchRaw(
+          `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`
+        ).then(r => r.json());
+
+        applyGraphJSON(data);
+        document.getElementById('driveModal').classList.remove('active');
+        showToast(`「${fileName}」を読み込みました`);
+      } catch (err) {
+        showToast('読み込みに失敗しました: ' + err.message);
+      }
+    }
+
+    function initGoogleIntegration() {
+      document.getElementById('btnGoogleLogin').addEventListener('click', handleGoogleLogin);
+      document.getElementById('btnGoogleLogout').addEventListener('click', handleGoogleLogout);
+      document.getElementById('btnDriveSave').addEventListener('click', () => {
+        if (!googleAccessToken) { showToast('先にGoogleでログインしてください'); return; }
+        driveSaveCurrentGraph();
+      });
+      document.getElementById('btnDriveLoad').addEventListener('click', () => {
+        if (!googleAccessToken) { showToast('先にGoogleでログインしてください'); return; }
+        driveOpenLoadModal();
+      });
+      document.getElementById('closeDriveModal').addEventListener('click', () => {
+        document.getElementById('driveModal').classList.remove('active');
+      });
+    }
+
     // ── アプリ起動スクリプト ──
     window.onload = () => {
       compiler = new ShaderCompiler();
@@ -2508,6 +3053,8 @@ float voronoi(vec2 st) {
           graph.setTouchSelectMode(!graph.touchSelectMode);
         });
       }
+
+      initGoogleIntegration();
 
       function renderLoop() {
         compiler.render();
