@@ -29,8 +29,12 @@
       font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
       background-color: var(--bg-dark);
       color: var(--text-main);
+      /* iOS Safariの100vhはツールバー分を含む「最大」の高さで計算されるため、
+         実際に見えている領域より長くなり下部が見切れる。100dvh（対応ブラウザ）で補正しつつ、
+         それでも収まりきらない場合に備えてoverflow-yでスクロールできるようにしておく */
       height: 100vh;
-      overflow: hidden;
+      height: 100dvh;
+      overflow-y: auto;
       display: flex;
       flex-direction: column;
     }

@@ -846,6 +846,12 @@
           }
         });
 
+        // 接続確定後に再描画し、接続済み入力の手動入力欄が残らないようにする
+        idMap.forEach(newId => {
+          const n = this.nodes.find(x => x.id === newId);
+          if (n) this.renderNode(n);
+        });
+
         this.selectedNodeIds = newSelectedIds;
         this.updateNodeSelectionUI();
         this.updateGraph();
@@ -912,6 +918,12 @@
               toSocket: conn.toSocket
             });
           }
+        });
+
+        // 接続確定後に再描画し、接続済み入力の手動入力欄が残らないようにする
+        idMap.forEach(newId => {
+          const n = this.nodes.find(x => x.id === newId);
+          if (n) this.renderNode(n);
         });
 
         this.selectedNodeIds = newSelectedIds;
@@ -1010,8 +1022,23 @@
           beginTitleEdit();
         });
 
+        // タッチ環境ではネイティブのdblclick合成に頼らず、ダブルタップを自前で検出する
+        let lastTitleTapTime = 0;
+        titleSpan.addEventListener('touchend', (e) => {
+          e.stopPropagation();
+          const now = Date.now();
+          if (now - lastTitleTapTime < 400) {
+            e.preventDefault();
+            lastTitleTapTime = 0;
+            beginTitleEdit();
+          } else {
+            lastTitleTapTime = now;
+          }
+        });
+
+        let closeSpan = null;
         if (!def.isOutputNode) {
-          const closeSpan = document.createElement('span');
+          closeSpan = document.createElement('span');
           closeSpan.className = 'node-close';
           closeSpan.innerHTML = '&times;';
           closeSpan.addEventListener('click', (e) => {
@@ -1059,6 +1086,10 @@
 
         headerEl.addEventListener('touchstart', (e) => {
           if (e.touches.length !== 1) return;
+          // 閉じるボタン／タイトルのタップは、ドラッグ開始として扱わずブラウザの
+          // タップ処理（クリック発火・自前のダブルタップ検出）に任せる。
+          // ここでpreventDefaultしてしまうとタップ由来のclickが合成されなくなる。
+          if ((closeSpan && e.target === closeSpan) || e.target === titleSpan) return;
           e.preventDefault();
           const t = e.touches[0];
           handleHeaderDragStart({
@@ -2739,6 +2770,9 @@ float voronoi(vec2 st) {
         graph.createNode('output', 300, 150);
       }
 
+      // 接続はノード作成後にまとめて追加しているため、確定後に再描画して
+      // 接続済み入力の手動入力欄が残らないようにする
+      graph.nodes.forEach(n => graph.renderNode(n));
       graph.updateGraph();
     }
 
