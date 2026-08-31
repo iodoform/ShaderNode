@@ -2971,15 +2971,18 @@ float voronoi(vec2 st) {
     }
 
     async function driveSaveCurrentGraph() {
-      const defaultName = `shader-node-graph-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
-      const filename = window.prompt('保存するファイル名を入力してください:', defaultName);
-      if (!filename) return;
-
+      // トークン更新はポップアップを伴うことがあり、ブラウザ（特にSafari）はユーザー操作の
+      // 直後でないとポップアップをブロックしやすい。間にwindow.prompt()を挟むと
+      // 「クリック直後」という条件が崩れて更新が失敗しやすくなるため、先に済ませておく。
       if (!(await ensureFreshGoogleToken())) {
         showToast('ログインの有効期限が切れました。もう一度Googleでログインしてください');
         handleGoogleLogout();
         return;
       }
+
+      const defaultName = `shader-node-graph-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+      const filename = window.prompt('保存するファイル名を入力してください:', defaultName);
+      if (!filename) return;
 
       try {
         showToast('Googleドライブに保存しています...');
