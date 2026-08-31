@@ -1106,6 +1106,33 @@
         const bodyEl = document.createElement('div');
         bodyEl.className = 'node-body';
 
+        // ヘッダーだけでなく、本体の余白（コントロール間の隙間やパディング）でも
+        // ドラッグでノードを移動できるようにする。実際に操作する部品の上では発生させない。
+        const isInteractiveTarget = (target) =>
+          !!(target.closest && target.closest(
+            'input, select, button, canvas, .socket-pin, .drag-number, .color-ramp-bar, .color-ramp-stop, .color-ramp-btn'
+          ));
+
+        bodyEl.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          if (Date.now() - this.lastTouchTs < 600) return; // 合成mousedownを無視
+          if (isInteractiveTarget(e.target)) return;
+          handleHeaderDragStart(e);
+        });
+
+        bodyEl.addEventListener('touchstart', (e) => {
+          if (e.touches.length !== 1) return;
+          if (isInteractiveTarget(e.target)) return;
+          e.preventDefault();
+          const t = e.touches[0];
+          handleHeaderDragStart({
+            clientX: t.clientX,
+            clientY: t.clientY,
+            shiftKey: false,
+            stopPropagation: () => e.stopPropagation()
+          });
+        }, { passive: false });
+
         if (def.isCustomUI && node.type === 'colorRamp') {
           const rampContainer = document.createElement('div');
           rampContainer.className = 'color-ramp-container';
