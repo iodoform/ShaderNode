@@ -997,15 +997,18 @@
           titleSpan.replaceWith(input);
           input.focus();
           input.select();
+          activeEditInput = input;
 
           const commit = () => {
             const newTitle = input.value.trim();
             node.title = newTitle || node.title;
             titleSpan.textContent = node.title;
             input.replaceWith(titleSpan);
+            if (activeEditInput === input) activeEditInput = null;
           };
           const cancel = () => {
             input.replaceWith(titleSpan);
+            if (activeEditInput === input) activeEditInput = null;
           };
 
           input.addEventListener('blur', commit);
@@ -1799,6 +1802,7 @@
           el.replaceChild(input, valueSpan);
           input.focus();
           input.select();
+          activeEditInput = input;
 
           const commit = () => {
             const parsed = parseFloat(input.value);
@@ -1808,9 +1812,11 @@
             }
             setDisplay(currentValue);
             el.replaceChild(valueSpan, input);
+            if (activeEditInput === input) activeEditInput = null;
           };
           const cancel = () => {
             el.replaceChild(valueSpan, input);
+            if (activeEditInput === input) activeEditInput = null;
           };
 
           input.addEventListener('blur', commit);
@@ -2502,6 +2508,17 @@ float voronoi(vec2 st) {
     // ── グローバル変数・ヘルパー ──
     let graph;
     let compiler;
+
+    // ノード名リネーム／数値ドラッグ入力など、インライン編集中のinput要素を追跡する。
+    // 一部の要素はtouchstart/pointerdownでpreventDefault()しているため、その上をタップしても
+    // ブラウザ標準のフォーカス移動によるblurが発生しないことがある。そこで、キャプチャ段階で
+    // 「編集欄の外側」へのタップを検知し、明示的にblur()して編集を確定/キャンセルさせる。
+    let activeEditInput = null;
+    document.addEventListener('pointerdown', (e) => {
+      if (activeEditInput && e.target !== activeEditInput) {
+        activeEditInput.blur();
+      }
+    }, true);
 
     function showError(msg) {
       const banner = document.getElementById('errorBanner');
